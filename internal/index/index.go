@@ -471,6 +471,19 @@ func FindImporters(dbPath, symbolName string, depth, limit int) ([]ImporterResul
 	return store.FindImporters(symbolName, depth, limit)
 }
 
+// FindImportersByPath finds files that import a given file or package path directly.
+func FindImportersByPath(dbPath, target string, depth, limit int) ([]ImporterResult, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	store, err := OpenStore(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	return store.FindImportersByPath(target, depth, limit)
+}
+
 // SymbolsByName finds symbols by exact name (for show command).
 func SymbolsByName(dbPath, name string) ([]SymbolResult, error) {
 	store, err := OpenStore(dbPath)

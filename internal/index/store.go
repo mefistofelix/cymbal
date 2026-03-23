@@ -597,3 +597,131 @@ func (s *Store) FindImporters(symbolName string, depth, limit int) ([]ImporterRe
 
 	return results, nil
 }
+
+// TypeRefsInRange finds type-like symbols referenced within a line range of a file.
+func (s *Store) TypeRefsInRange(filePath string, startLine, endLine int) ([]SymbolResult, error) {
+	// Find distinct names referenced in the range.
+	nameRows, err := s.db.Query(`
+		SELECT DISTINCT r.name
+		FROM refs r JOIN files f ON r.file_id = f.id
+		WHERE f.path = ? AND r.line >= ? AND r.line <= ?
+	`, filePath, startLine, endLine)
+	if err != nil {
+		return nil, err
+	}
+	defer nameRows.Close()
+
+	var names []string
+	for nameRows.Next() {
+		var name string
+		if err := nameRows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	if err := nameRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// For each name, look up type-like symbols.
+	var results []SymbolResult
+	seen := make(map[string]bool)
+	for _, name := range names {
+		rows, err := s.db.Query(`
+			SELECT s.name, s.kind, f.path, f.rel_path, s.start_line, s.end_line, s.parent, s.depth, s.signature, COALESCE(s.summary, ''), s.language
+			FROM symbols s JOIN files f ON s.file_id = f.id
+			WHERE s.name = ? AND s.kind IN ('struct','interface','class','type','enum','trait')
+		`, name)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var r SymbolResult
+			if err := rows.Scan(&r.Name, &r.Kind, &r.File, &r.RelPath, &r.StartLine, &r.EndLine, &r.Parent, &r.Depth, &r.Signature, &r.Summary, &r.Language); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			key := r.SymbolID()
+			if !seen[key] {
+				seen[key] = true
+				results = append(results, r)
+			}
+		}
+		rows.Close()
+	}
+
+	return results, nil
+}
+
+// FileImports returns the raw import paths for a file.
+func (s *Store) FileImports(filePath string) ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT i.raw_path
+		FROM imports i JOIN files f ON i.file_id = f.id
+		WHERE f.path = ?
+		ORDER BY i.raw_path
+	`, filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var imports []string
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		imports = append(imports, raw)
+	}
+	return imports, rows.Err()
+}
+
+// FindImportersByPath finds files that import a given file or package path directly, up to depth hops.
+func (s *Store) FindImportersByPath(target string, depth, limit int) ([]ImporterResult, error) {
+	if depth <= 0 {
+		depth = 1
+	}
+	if depth > 3 {
+		depth = 3
+	}
+
+	// BFS through import graph.
+	seen := make(map[string]bool)
+	var results []ImporterResult
+	currentTargets := []string{target}
+
+	for d := 1; d <= depth && len(currentTargets) > 0; d++ {
+		var nextTargets []string
+		for _, t := range currentTargets {
+			// Match raw_path by suffix (covers package paths like "foo/bar/pkg").
+			rawPattern := "%" + t
+			// Also try matching against rel_path for when the user provides a file path.
+			relPattern := "%" + strings.TrimSuffix(filepath.Base(t), filepath.Ext(t)) + "%"
+			rows, err := s.db.Query(`
+				SELECT DISTINCT f.path, f.rel_path, i.raw_path
+				FROM imports i JOIN files f ON i.file_id = f.id
+				WHERE i.raw_path LIKE ? OR i.raw_path LIKE ?
+				LIMIT ?
+			`, rawPattern, relPattern, limit)
+			if err != nil {
+				continue
+			}
+			for rows.Next() {
+				var r ImporterResult
+				if err := rows.Scan(&r.File, &r.RelPath, &r.Import); err == nil {
+					if !seen[r.RelPath] {
+						seen[r.RelPath] = true
+						r.Depth = d
+						results = append(results, r)
+						nextTargets = append(nextTargets, r.RelPath)
+					}
+				}
+			}
+			rows.Close()
+		}
+		currentTargets = nextTargets
+	}
+
+	return results, nil
+}
