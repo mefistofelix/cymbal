@@ -19,3 +19,8 @@ Thumbs.db
 
 # Go
 /vendor/
+
+# Docs
+docs/node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
