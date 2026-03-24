@@ -23,12 +23,36 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringP("db", "d", defaultDBPath(), "path to cymbal database")
+	rootCmd.PersistentFlags().StringP("db", "d", "", "path to cymbal database (default: auto per-repo)")
 	rootCmd.PersistentFlags().Bool("json", false, "output as JSON")
-	rootCmd.PersistentFlags().String("repo", "", "explicit repo root (default: auto-detect from CWD)")
 }
 
-func defaultDBPath() string {
+// getDBPath returns the database path. If --db is set, use it.
+// Otherwise, detect git root from CWD and compute per-repo path.
+func getDBPath(cmd *cobra.Command) string {
+	if p, _ := cmd.Flags().GetString("db"); p != "" {
+		return p
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fallbackDBPath()
+	}
+	root, err := index.FindGitRoot(cwd)
+	if err != nil {
+		return fallbackDBPath()
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return fallbackDBPath()
+	}
+	dbPath, err := index.RepoDBPath(abs)
+	if err != nil {
+		return fallbackDBPath()
+	}
+	return dbPath
+}
+
+func fallbackDBPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ".cymbal.db"
@@ -36,30 +60,7 @@ func defaultDBPath() string {
 	return fmt.Sprintf("%s/.cymbal/cymbal.db", home)
 }
 
-func getDBPath(cmd *cobra.Command) string {
-	p, _ := cmd.Flags().GetString("db")
-	return p
-}
-
 func getJSONFlag(cmd *cobra.Command) bool {
 	v, _ := cmd.Flags().GetBool("json")
 	return v
-}
-
-// resolveRepo auto-detects the repo root from CWD or uses --repo flag.
-func resolveRepo(cmd *cobra.Command) string {
-	if r, _ := cmd.Flags().GetString("repo"); r != "" {
-		abs, err := filepath.Abs(r)
-		if err != nil {
-			return r
-		}
-		return abs
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
-	dbPath := getDBPath(cmd)
-	repo, _ := index.ResolveRepo(dbPath, cwd)
-	return repo
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -60,11 +61,48 @@ type RepoStatsResult struct {
 	Languages   map[string]int `json:"languages"`
 }
 
+// RepoDBPath computes the per-repo database path: ~/.cymbal/repos/<hash>/index.db
+// where hash is the first 16 hex chars of SHA-256 of the absolute repo root path.
+func RepoDBPath(repoRoot string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("getting home dir: %w", err)
+	}
+	h := sha256.Sum256([]byte(repoRoot))
+	hash := hex.EncodeToString(h[:8]) // 16 hex chars
+	return filepath.Join(home, ".cymbal", "repos", hash, "index.db"), nil
+}
+
+// FindGitRoot walks up from dir to find the nearest .git directory.
+func FindGitRoot(dir string) (string, error) {
+	d := dir
+	for {
+		if info, err := os.Stat(filepath.Join(d, ".git")); err == nil && info.IsDir() {
+			return d, nil
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			break
+		}
+		d = parent
+	}
+	return "", fmt.Errorf("no git repository found from %s", dir)
+}
+
 // Index indexes all source files under root.
+// If dbPath is empty, it is auto-computed from root using RepoDBPath.
 func Index(root, dbPath string, opts Options) (*Stats, error) {
 	workers := opts.Workers
 	if workers <= 0 {
 		workers = runtime.NumCPU()
+	}
+
+	if dbPath == "" {
+		var err error
+		dbPath, err = RepoDBPath(root)
+		if err != nil {
+			return nil, fmt.Errorf("computing db path: %w", err)
+		}
 	}
 
 	store, err := OpenStore(dbPath)
@@ -73,26 +111,9 @@ func Index(root, dbPath string, opts Options) (*Stats, error) {
 	}
 	defer store.Close()
 
-	// Remove any sub-repos that are inside this root — their files will be
-	// re-indexed under this broader repo.
-	subRepos, _ := store.SubRepos(root)
-	for _, sub := range subRepos {
-		fmt.Fprintf(os.Stderr, "Removing sub-repo %s (now covered by %s)\n", sub.Path, root)
-		if err := store.RemoveRepo(sub.Path); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove sub-repo %s: %v\n", sub.Path, err)
-		}
-	}
-
-	// If this path is inside an already-indexed parent repo, warn and
-	// re-index from the parent root instead.
-	if parent, ok, _ := store.ParentRepo(root); ok {
-		fmt.Fprintf(os.Stderr, "Note: %s is inside indexed repo %s — indexing parent instead\n", root, parent.Path)
-		root = parent.Path
-	}
-
-	repoID, err := store.EnsureRepo(root)
-	if err != nil {
-		return nil, fmt.Errorf("registering repo: %w", err)
+	// Store repo root in metadata.
+	if err := store.SetMeta("repo_root", root); err != nil {
+		return nil, fmt.Errorf("setting repo metadata: %w", err)
 	}
 
 	files, err := walker.Walk(root, workers)
@@ -123,7 +144,7 @@ func Index(root, dbPath string, opts Options) (*Stats, error) {
 				if !opts.Force {
 					hash, err := HashFile(f.Path)
 					if err == nil {
-						existingHash, _ := store.FileHash(repoID, f.Path)
+						existingHash, _ := store.FileHash(f.Path)
 						if existingHash == hash {
 							skipped.Add(1)
 							continue
@@ -138,7 +159,7 @@ func Index(root, dbPath string, opts Options) (*Stats, error) {
 				}
 
 				hash, _ := HashFile(f.Path)
-				fileID, err := store.UpsertFile(repoID, f.Path, f.RelPath, f.Language, hash)
+				fileID, err := store.UpsertFile(f.Path, f.RelPath, f.Language, hash)
 				if err != nil {
 					errors.Add(1)
 					continue
@@ -342,14 +363,45 @@ func readLines(path string, startLine, endLine int) string {
 	return b.String()
 }
 
-// ListRepos returns all indexed repos.
-func ListRepos(dbPath string) ([]Repo, error) {
-	store, err := OpenStore(dbPath)
+// Repo holds info about an indexed repo (used for listing all repos).
+type Repo struct {
+	Path        string `json:"path"`
+	FileCount   int    `json:"file_count"`
+	SymbolCount int    `json:"symbol_count"`
+	DBPath      string `json:"db_path"`
+}
+
+// ListRepos scans ~/.cymbal/repos/*/index.db and returns info for each.
+func ListRepos() ([]Repo, error) {
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
-	defer store.Close()
-	return store.ListRepos()
+	pattern := filepath.Join(home, ".cymbal", "repos", "*", "index.db")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, err
+	}
+
+	var repos []Repo
+	for _, dbPath := range matches {
+		store, err := OpenStore(dbPath)
+		if err != nil {
+			continue
+		}
+		stats, err := store.RepoStats()
+		store.Close()
+		if err != nil || stats.Path == "" {
+			continue
+		}
+		repos = append(repos, Repo{
+			Path:        stats.Path,
+			FileCount:   stats.FileCount,
+			SymbolCount: stats.SymbolCount,
+			DBPath:      dbPath,
+		})
+	}
+	return repos, nil
 }
 
 // FileOutline returns symbols for a file.
@@ -375,24 +427,14 @@ func SearchSymbols(dbPath string, q SearchQuery) ([]SymbolResult, error) {
 	return store.SearchSymbols(q.Text, q.Kind, q.Language, q.Exact, q.Limit)
 }
 
-// ResolveRepo finds the nearest indexed repo root by walking up from cwd.
-func ResolveRepo(dbPath, cwd string) (string, error) {
-	store, err := OpenStore(dbPath)
-	if err != nil {
-		return "", err
-	}
-	defer store.Close()
-	return store.ResolveRepo(cwd)
-}
-
-// RepoStats returns overview statistics for a repo.
-func RepoStats(dbPath, repoPath string) (*RepoStatsResult, error) {
+// RepoStats returns overview statistics for the repo in the given database.
+func RepoStats(dbPath string) (*RepoStatsResult, error) {
 	store, err := OpenStore(dbPath)
 	if err != nil {
 		return nil, err
 	}
 	defer store.Close()
-	return store.RepoStats(repoPath)
+	return store.RepoStats()
 }
 
 // TextSearch greps indexed file contents on disk.

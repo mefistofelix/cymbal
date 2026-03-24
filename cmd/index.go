@@ -40,7 +40,14 @@ you already have installed and authenticated.`,
 		backend, _ := cmd.Flags().GetString("backend")
 		model, _ := cmd.Flags().GetString("model")
 
-		dbPath := getDBPath(cmd)
+		// Use --db override if set, otherwise compute from target path.
+		dbPath, _ := cmd.Flags().GetString("db")
+		if dbPath == "" {
+			dbPath, err = index.RepoDBPath(absPath)
+			if err != nil {
+				return fmt.Errorf("computing db path: %w", err)
+			}
+		}
 
 		fmt.Fprintf(os.Stderr, "Indexing %s ...\n", absPath)
 		start := time.Now()

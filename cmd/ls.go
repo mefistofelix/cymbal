@@ -23,7 +23,7 @@ or show repo statistics (--stats).`,
 		jsonOut := getJSONFlag(cmd)
 
 		if repos {
-			return lsRepos(cmd, jsonOut)
+			return lsRepos(jsonOut)
 		}
 		if stats {
 			return lsStats(cmd, jsonOut)
@@ -39,9 +39,8 @@ func init() {
 	rootCmd.AddCommand(lsCmd)
 }
 
-func lsRepos(cmd *cobra.Command, jsonOut bool) error {
-	dbPath := getDBPath(cmd)
-	repos, err := index.ListRepos(dbPath)
+func lsRepos(jsonOut bool) error {
+	repos, err := index.ListRepos()
 	if err != nil {
 		return err
 	}
@@ -56,22 +55,22 @@ func lsRepos(cmd *cobra.Command, jsonOut bool) error {
 	}
 
 	for _, r := range repos {
-		fmt.Printf("%-50s  %d files  %d symbols  %s\n",
-			r.Path, r.FileCount, r.SymbolCount, r.IndexedAt.Format("2006-01-02 15:04"))
+		fmt.Printf("%-50s  %d files  %d symbols\n",
+			r.Path, r.FileCount, r.SymbolCount)
 	}
 	return nil
 }
 
 func lsStats(cmd *cobra.Command, jsonOut bool) error {
 	dbPath := getDBPath(cmd)
-	repo := resolveRepo(cmd)
-	if repo == "" {
-		return fmt.Errorf("no repo detected — run 'cymbal index <path>' or use --repo")
-	}
 
-	stats, err := index.RepoStats(dbPath, repo)
+	stats, err := index.RepoStats(dbPath)
 	if err != nil {
 		return err
+	}
+
+	if stats.Path == "" {
+		return fmt.Errorf("no repo detected — run 'cymbal index <path>' or use --db")
 	}
 
 	if jsonOut {

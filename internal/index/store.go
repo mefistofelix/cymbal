@@ -16,21 +16,18 @@ import (
 )
 
 const schema = `
-CREATE TABLE IF NOT EXISTS repos (
-	id       INTEGER PRIMARY KEY AUTOINCREMENT,
-	path     TEXT UNIQUE NOT NULL,
-	indexed_at DATETIME NOT NULL
+CREATE TABLE IF NOT EXISTS meta (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS files (
 	id       INTEGER PRIMARY KEY AUTOINCREMENT,
-	repo_id  INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
-	path     TEXT NOT NULL,
+	path     TEXT UNIQUE NOT NULL,
 	rel_path TEXT NOT NULL,
 	language TEXT NOT NULL,
 	hash     TEXT NOT NULL,
-	indexed_at DATETIME NOT NULL,
-	UNIQUE(repo_id, path)
+	indexed_at DATETIME NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS symbols (
@@ -68,7 +65,6 @@ CREATE TABLE IF NOT EXISTS refs (
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
-CREATE INDEX IF NOT EXISTS idx_files_repo ON files(repo_id);
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 CREATE INDEX IF NOT EXISTS idx_imports_raw ON imports(raw_path);
 CREATE INDEX IF NOT EXISTS idx_imports_file ON imports(file_id);
@@ -126,30 +122,30 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// EnsureRepo creates or returns the repo ID.
-func (s *Store) EnsureRepo(path string) (int64, error) {
-	now := time.Now()
-	res, err := s.db.Exec(
-		`INSERT INTO repos (path, indexed_at) VALUES (?, ?)
-		 ON CONFLICT(path) DO UPDATE SET indexed_at = ?`,
-		path, now, now,
-	)
-	if err != nil {
-		return 0, err
+// GetMeta returns a metadata value, or empty string if not set.
+func (s *Store) GetMeta(key string) (string, error) {
+	var value string
+	err := s.db.QueryRow("SELECT value FROM meta WHERE key = ?", key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
 	}
+	return value, err
+}
 
-	id, err := res.LastInsertId()
-	if err != nil || id == 0 {
-		row := s.db.QueryRow("SELECT id FROM repos WHERE path = ?", path)
-		err = row.Scan(&id)
-	}
-	return id, err
+// SetMeta sets a metadata key/value pair.
+func (s *Store) SetMeta(key, value string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO meta (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = ?`,
+		key, value, value,
+	)
+	return err
 }
 
 // FileHash returns the stored hash for a file, or empty string if not indexed.
-func (s *Store) FileHash(repoID int64, filePath string) (string, error) {
+func (s *Store) FileHash(filePath string) (string, error) {
 	var hash string
-	err := s.db.QueryRow("SELECT hash FROM files WHERE repo_id = ? AND path = ?", repoID, filePath).Scan(&hash)
+	err := s.db.QueryRow("SELECT hash FROM files WHERE path = ?", filePath).Scan(&hash)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -167,13 +163,13 @@ func HashFile(path string) (string, error) {
 }
 
 // UpsertFile stores file info and returns the file ID. Clears old data via cascade.
-func (s *Store) UpsertFile(repoID int64, filePath, relPath, lang, hash string) (int64, error) {
+func (s *Store) UpsertFile(filePath, relPath, lang, hash string) (int64, error) {
 	now := time.Now()
-	s.db.Exec("DELETE FROM files WHERE repo_id = ? AND path = ?", repoID, filePath)
+	s.db.Exec("DELETE FROM files WHERE path = ?", filePath)
 
 	res, err := s.db.Exec(
-		"INSERT INTO files (repo_id, path, rel_path, language, hash, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
-		repoID, filePath, relPath, lang, hash, now,
+		"INSERT INTO files (path, rel_path, language, hash, indexed_at) VALUES (?, ?, ?, ?, ?)",
+		filePath, relPath, lang, hash, now,
 	)
 	if err != nil {
 		return 0, err
@@ -262,92 +258,6 @@ func (s *Store) InsertRefs(fileID int64, refs []symbols.Ref) error {
 		}
 	}
 	return tx.Commit()
-}
-
-// Repo holds info about an indexed repo.
-type Repo struct {
-	ID          int64     `json:"id"`
-	Path        string    `json:"path"`
-	FileCount   int       `json:"file_count"`
-	SymbolCount int       `json:"symbol_count"`
-	IndexedAt   time.Time `json:"indexed_at"`
-}
-
-// RemoveRepo deletes a repo and all its files/symbols/imports/refs (via cascade).
-func (s *Store) RemoveRepo(path string) error {
-	_, err := s.db.Exec("DELETE FROM repos WHERE path = ?", path)
-	return err
-}
-
-// SubRepos returns repos whose paths are strict subdirectories of root.
-func (s *Store) SubRepos(root string) ([]Repo, error) {
-	prefix := root + "/"
-	rows, err := s.db.Query(`
-		SELECT id, path, indexed_at, 0, 0 FROM repos
-		WHERE path LIKE ? AND path != ?
-	`, prefix+"%", root)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var repos []Repo
-	for rows.Next() {
-		var r Repo
-		if err := rows.Scan(&r.ID, &r.Path, &r.IndexedAt, &r.FileCount, &r.SymbolCount); err != nil {
-			return nil, err
-		}
-		repos = append(repos, r)
-	}
-	return repos, rows.Err()
-}
-
-// ParentRepo returns a repo that contains path as a subdirectory, if any.
-func (s *Store) ParentRepo(path string) (Repo, bool, error) {
-	// Walk up the path checking each ancestor.
-	dir := path
-	for {
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-		var r Repo
-		err := s.db.QueryRow(`
-			SELECT id, path, indexed_at, 0, 0 FROM repos WHERE path = ?
-		`, dir).Scan(&r.ID, &r.Path, &r.IndexedAt, &r.FileCount, &r.SymbolCount)
-		if err == nil {
-			return r, true, nil
-		}
-		if err != sql.ErrNoRows {
-			return Repo{}, false, err
-		}
-	}
-	return Repo{}, false, nil
-}
-
-// ListRepos returns all indexed repos with stats.
-func (s *Store) ListRepos() ([]Repo, error) {
-	rows, err := s.db.Query(`
-		SELECT r.id, r.path, r.indexed_at,
-			   COALESCE((SELECT COUNT(*) FROM files WHERE repo_id = r.id), 0),
-			   COALESCE((SELECT COUNT(*) FROM symbols s JOIN files f ON s.file_id = f.id WHERE f.repo_id = r.id), 0)
-		FROM repos r
-		ORDER BY r.indexed_at DESC
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var repos []Repo
-	for rows.Next() {
-		var r Repo
-		if err := rows.Scan(&r.ID, &r.Path, &r.IndexedAt, &r.FileCount, &r.SymbolCount); err != nil {
-			return nil, err
-		}
-		repos = append(repos, r)
-	}
-	return repos, rows.Err()
 }
 
 // SymbolResult holds a search result.
@@ -456,41 +366,18 @@ func (s *Store) FileSymbols(filePath string) ([]SymbolResult, error) {
 	return results, rows.Err()
 }
 
-// ResolveRepo finds the nearest indexed repo root by walking up from cwd.
-func (s *Store) ResolveRepo(cwd string) (string, error) {
-	dir := cwd
-	for {
-		var path string
-		err := s.db.QueryRow("SELECT path FROM repos WHERE path = ?", dir).Scan(&path)
-		if err == nil {
-			return path, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return "", fmt.Errorf("no indexed repo found for %s", cwd)
-}
-
-// RepoStats returns overview statistics for a repo.
-func (s *Store) RepoStats(repoPath string) (*RepoStatsResult, error) {
-	var repoID int64
-	err := s.db.QueryRow("SELECT id FROM repos WHERE path = ?", repoPath).Scan(&repoID)
-	if err != nil {
-		return nil, fmt.Errorf("repo not found: %s", repoPath)
-	}
-
+// RepoStats returns overview statistics for this database.
+func (s *Store) RepoStats() (*RepoStatsResult, error) {
+	repoRoot, _ := s.GetMeta("repo_root")
 	result := &RepoStatsResult{
-		Path:      repoPath,
+		Path:      repoRoot,
 		Languages: make(map[string]int),
 	}
 
-	s.db.QueryRow("SELECT COUNT(*) FROM files WHERE repo_id = ?", repoID).Scan(&result.FileCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM symbols s JOIN files f ON s.file_id = f.id WHERE f.repo_id = ?", repoID).Scan(&result.SymbolCount)
+	s.db.QueryRow("SELECT COUNT(*) FROM files").Scan(&result.FileCount)
+	s.db.QueryRow("SELECT COUNT(*) FROM symbols s JOIN files f ON s.file_id = f.id").Scan(&result.SymbolCount)
 
-	rows, err := s.db.Query("SELECT language, COUNT(*) FROM files WHERE repo_id = ? GROUP BY language ORDER BY COUNT(*) DESC", repoID)
+	rows, err := s.db.Query("SELECT language, COUNT(*) FROM files GROUP BY language ORDER BY COUNT(*) DESC")
 	if err != nil {
 		return result, nil
 	}
