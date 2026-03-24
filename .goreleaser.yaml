@@ -8,6 +8,7 @@ builds:
     binary: cymbal
     env:
       - CGO_ENABLED=1
+      - CGO_CFLAGS=-DSQLITE_ENABLE_FTS5
     flags:
       - -trimpath
     ldflags:
@@ -22,19 +23,23 @@ builds:
       - goos: darwin
         goarch: amd64
         env:
-          - CC=o64-clang
+          - CC=zig-cc-darwin-amd64
+          - CXX=zig-cxx-darwin-amd64
       - goos: darwin
         goarch: arm64
         env:
-          - CC=oa64-clang
+          - CC=zig-cc-darwin-arm64
+          - CXX=zig-cxx-darwin-arm64
       - goos: linux
         goarch: amd64
         env:
-          - CC=gcc
+          - CC=zig-cc-linux-amd64
+          - CXX=zig-cxx-linux-amd64
       - goos: linux
         goarch: arm64
         env:
-          - CC=aarch64-linux-gnu-gcc
+          - CC=zig-cc-linux-arm64
+          - CXX=zig-cxx-linux-arm64
 
 archives:
   - id: cymbal
@@ -59,22 +64,3 @@ changelog:
       - "^test:"
       - "^chore:"
       - "^ci:"
-
-brews:
-  - ids:
-      - cymbal
-    repository:
-      owner: 1broseidon
-      name: homebrew-tap
-      branch: main
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Formula
-    commit_author:
-      name: github-actions[bot]
-      email: 41898282+github-actions[bot]@users.noreply.github.com
-    commit_msg_template: "formula: update cymbal to {{ .Tag }}"
-    homepage: https://github.com/1broseidon/cymbal
-    description: Blazing-fast code indexer and symbol discovery CLI powered by tree-sitter
-    license: MIT
-    install: |
-      bin.install "cymbal"
