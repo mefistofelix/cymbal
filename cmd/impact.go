@@ -19,6 +19,7 @@ var impactCmd = &cobra.Command{
 		jsonOut := getJSONFlag(cmd)
 		depth, _ := cmd.Flags().GetInt("depth")
 		limit, _ := cmd.Flags().GetInt("limit")
+		ctx, _ := cmd.Flags().GetInt("context")
 
 		results, err := index.FindImpact(dbPath, name, depth, limit)
 		if err != nil {
@@ -31,7 +32,7 @@ var impactCmd = &cobra.Command{
 		}
 
 		if jsonOut {
-			return writeJSON(results)
+			return writeJSON(enrichImpact(results, ctx))
 		}
 
 		// Group results by depth.
@@ -50,10 +51,13 @@ var impactCmd = &cobra.Command{
 				if r.Depth != d {
 					continue
 				}
+				ctxLines, ctxStart := readSourceContext(r.File, r.Line, ctx)
 				refs = append(refs, refLine{
-					relPath: r.RelPath,
-					line:    r.Line,
-					text:    strings.TrimSpace(readSourceLine(r.File, r.Line)),
+					relPath:      r.RelPath,
+					line:         r.Line,
+					text:         strings.TrimSpace(readSourceLine(r.File, r.Line)),
+					contextLines: ctxLines,
+					contextStart: ctxStart,
 				})
 			}
 			if len(refs) == 0 {
@@ -86,5 +90,6 @@ var impactCmd = &cobra.Command{
 func init() {
 	impactCmd.Flags().IntP("depth", "D", 2, "max call-chain depth (max 5)")
 	impactCmd.Flags().IntP("limit", "n", 50, "max results")
+	impactCmd.Flags().IntP("context", "C", 1, "lines of context around each call site (0 for single-line)")
 	rootCmd.AddCommand(impactCmd)
 }

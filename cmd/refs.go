@@ -28,6 +28,7 @@ Note: references are best-effort based on AST name matching, not semantic analys
 		impact, _ := cmd.Flags().GetBool("impact")
 		depth, _ := cmd.Flags().GetInt("depth")
 		limit, _ := cmd.Flags().GetInt("limit")
+		ctx, _ := cmd.Flags().GetInt("context")
 
 		if impact {
 			importers = true
@@ -39,7 +40,7 @@ Note: references are best-effort based on AST name matching, not semantic analys
 		if importers {
 			return refsImporters(dbPath, name, depth, limit, jsonOut)
 		}
-		return refsSymbol(dbPath, name, limit, jsonOut)
+		return refsSymbol(dbPath, name, limit, ctx, jsonOut)
 	},
 }
 
@@ -48,10 +49,11 @@ func init() {
 	refsCmd.Flags().Bool("impact", false, "transitive impact analysis (--importers --depth 2)")
 	refsCmd.Flags().IntP("depth", "D", 1, "import chain depth for --importers (max 3)")
 	refsCmd.Flags().IntP("limit", "n", 20, "max results")
+	refsCmd.Flags().IntP("context", "C", 1, "lines of context around each call site (0 for single-line)")
 	rootCmd.AddCommand(refsCmd)
 }
 
-func refsSymbol(dbPath, name string, limit int, jsonOut bool) error {
+func refsSymbol(dbPath, name string, limit, ctx int, jsonOut bool) error {
 	results, err := index.FindReferences(dbPath, name, limit)
 	if err != nil {
 		return err
@@ -63,15 +65,18 @@ func refsSymbol(dbPath, name string, limit int, jsonOut bool) error {
 	}
 
 	if jsonOut {
-		return writeJSON(results)
+		return writeJSON(enrichRefs(results, ctx))
 	}
 
 	var refs []refLine
 	for _, r := range results {
+		ctxLines, ctxStart := readSourceContext(r.File, r.Line, ctx)
 		refs = append(refs, refLine{
-			relPath: r.RelPath,
-			line:    r.Line,
-			text:    strings.TrimSpace(readSourceLine(r.File, r.Line)),
+			relPath:      r.RelPath,
+			line:         r.Line,
+			text:         strings.TrimSpace(readSourceLine(r.File, r.Line)),
+			contextLines: ctxLines,
+			contextStart: ctxStart,
 		})
 	}
 	lines, groups := dedupRefLines(refs)
