@@ -31,7 +31,12 @@ Examples:
 		dbPath := getDBPath(cmd)
 		jsonOut := getJSONFlag(cmd)
 
-		result, err := index.Investigate(dbPath, name)
+		fileHint, symName := parseSymbolArg(name)
+		var opts []index.InvestigateOpts
+		if fileHint != "" {
+			opts = append(opts, index.InvestigateOpts{FileHint: fileHint})
+		}
+		result, err := index.Investigate(dbPath, symName, opts...)
 		if err != nil {
 			var ambig *index.AmbiguousError
 			if errors.As(err, &ambig) {

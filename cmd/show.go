@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/1broseidon/cymbal/internal/index"
 	"github.com/1broseidon/cymbal/internal/walker"
 	"github.com/spf13/cobra"
 )
@@ -44,18 +43,23 @@ func init() {
 	rootCmd.AddCommand(showCmd)
 }
 
-// isFilePath returns true if the target looks like a file path.
+// isFilePath returns true if the target looks like a file path (not file:Symbol).
 func isFilePath(target string) bool {
-	// Contains path separator.
+	// Check for "file:suffix" pattern.
+	if idx := strings.LastIndex(target, ":"); idx > 0 {
+		suffix := target[idx+1:]
+		// If suffix starts with a letter (not a digit or 'L'), it's file:Symbol — not a file path.
+		if len(suffix) > 0 && suffix[0] != 'L' && (suffix[0] < '0' || suffix[0] > '9') {
+			return false
+		}
+		// Strip :L1-L2 or :123-456 suffix before checking extension.
+		target = target[:idx]
+	}
+	// Contains path separator — treat as file.
 	if strings.Contains(target, "/") {
 		return true
 	}
-	// Strip :L1-L2 suffix before checking extension.
-	clean := target
-	if idx := strings.LastIndex(clean, ":"); idx > 0 {
-		clean = clean[:idx]
-	}
-	return walker.LangForFile(clean) != ""
+	return walker.LangForFile(target) != ""
 }
 
 // parseFileTarget parses "file.go:100-150" into path, start, end.
@@ -69,14 +73,17 @@ func parseFileTarget(target string) (string, int, int) {
 	rangeStr := target[idx+1:]
 
 	parts := strings.SplitN(rangeStr, "-", 2)
-	start, err := strconv.Atoi(parts[0])
+	// Strip optional "L" prefix (e.g., "L119-L132" or "L119").
+	p0 := strings.TrimPrefix(parts[0], "L")
+	start, err := strconv.Atoi(p0)
 	if err != nil {
 		return target, 0, 0
 	}
 
 	end := start
 	if len(parts) == 2 {
-		if e, err := strconv.Atoi(parts[1]); err == nil {
+		p1 := strings.TrimPrefix(parts[1], "L")
+		if e, err := strconv.Atoi(p1); err == nil {
 			end = e
 		}
 	}
@@ -147,7 +154,8 @@ func showFile(target string, ctx int, jsonOut bool) error {
 }
 
 func showSymbol(dbPath, name string, ctx int, jsonOut bool) error {
-	results, err := index.SymbolsByName(dbPath, name)
+	fileHint, symName := parseSymbolArg(name)
+	results, err := resolveSymbol(dbPath, fileHint, symName)
 	if err != nil {
 		return err
 	}

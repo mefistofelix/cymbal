@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/1broseidon/cymbal/internal/index"
+	"github.com/1broseidon/cymbal/internal/walker"
 )
 
 // writeJSON writes a versioned JSON envelope to stdout.
@@ -41,6 +43,55 @@ func frontmatter(meta []kv, content string) {
 // kv is an ordered key-value pair for frontmatter output.
 type kv struct {
 	k, v string
+}
+
+// parseSymbolArg parses a symbol argument that may include file disambiguation.
+// Accepted formats:
+//
+//	"Config"                          → file="", symbol="Config"
+//	"config.go:Config"                → file="config.go", symbol="Config"
+//	"internal/config/config.go:Config" → file="internal/config/config.go", symbol="Config"
+func parseSymbolArg(arg string) (file, symbol string) {
+	// If it contains "/" it might be "path/to/file.go:Symbol".
+	// Split on the last ":" and check if the left side looks like a file.
+	idx := strings.LastIndex(arg, ":")
+	if idx > 0 {
+		left := arg[:idx]
+		right := arg[idx+1:]
+		// Left side looks like a file if it contains "/" or has a known extension.
+		if (strings.Contains(left, "/") || walker.LangForFile(left) != "") && right != "" {
+			// Make sure right side isn't a line number (that's file:L1-L2 syntax).
+			if _, err := strconv.Atoi(strings.TrimPrefix(right, "L")); err != nil {
+				return left, right
+			}
+		}
+	}
+	return "", arg
+}
+
+// resolveSymbol looks up a symbol by name, optionally filtered by file path.
+// Returns the matching results. If file is non-empty, results are filtered
+// to those whose RelPath or full Path contains the file string.
+func resolveSymbol(dbPath, file, symbol string) ([]index.SymbolResult, error) {
+	results, err := index.SymbolsByName(dbPath, symbol)
+	if err != nil {
+		return nil, err
+	}
+	if file == "" || len(results) <= 1 {
+		return results, nil
+	}
+
+	// Filter by file path.
+	var filtered []index.SymbolResult
+	for _, r := range results {
+		if strings.HasSuffix(r.RelPath, file) || strings.Contains(r.RelPath, file) || strings.HasSuffix(r.File, file) {
+			filtered = append(filtered, r)
+		}
+	}
+	if len(filtered) > 0 {
+		return filtered, nil
+	}
+	return results, nil // no match on file filter, return all
 }
 
 // refLine is a single reference with file, line, source text, and surrounding context.

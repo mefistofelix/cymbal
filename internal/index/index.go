@@ -789,7 +789,13 @@ type InvestigateResult struct {
 //   - function/method: source + refs + shallow impact
 //   - class/struct/type/interface: source + members + importers-as-refs
 //   - ambiguous: returns AmbiguousError with ranked candidates
-func Investigate(dbPath, symbolName string) (*InvestigateResult, error) {
+//
+// InvestigateOpts controls symbol resolution for Investigate.
+type InvestigateOpts struct {
+	FileHint string // filter matches to symbols in this file path (substring match)
+}
+
+func Investigate(dbPath, symbolName string, opts ...InvestigateOpts) (*InvestigateResult, error) {
 	store, err := OpenStore(dbPath)
 	if err != nil {
 		return nil, err
@@ -800,6 +806,21 @@ func Investigate(dbPath, symbolName string) (*InvestigateResult, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Apply file hint filter if provided.
+	if len(opts) > 0 && opts[0].FileHint != "" {
+		hint := opts[0].FileHint
+		var filtered []SymbolResult
+		for _, r := range results {
+			if strings.HasSuffix(r.RelPath, hint) || strings.Contains(r.RelPath, hint) {
+				filtered = append(filtered, r)
+			}
+		}
+		if len(filtered) > 0 {
+			results = filtered
+		}
+	}
+
 	if len(results) == 0 {
 		return nil, fmt.Errorf("symbol not found: %s", symbolName)
 	}
