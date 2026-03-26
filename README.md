@@ -29,6 +29,7 @@ cymbal index .
 # Investigate any symbol — one call, right answer
 cymbal investigate handleAuth    # function → source + callers + impact
 cymbal investigate UserModel     # type → definition + members + references
+cymbal trace handleAuth          # downward call chain — what does it call?
 
 # Or use specific commands when you need control
 cymbal search handleAuth         # find a symbol
@@ -48,6 +49,7 @@ cymbal ls                        # file tree
 | Command | What it does |
 |---------|-------------|
 | `investigate` | **Start here.** Kind-adaptive exploration — one call, right shape |
+| `trace` | Downward call graph — what does this symbol call? |
 | `index` | Parse and index a directory |
 | `ls` | File tree, repo list, or `--stats` overview |
 | `search` | Symbol search (or `--text` for grep) |
@@ -70,27 +72,28 @@ Add this to your agent's system prompt (e.g., `CLAUDE.md`, `agent.md`, or MCP to
 ```markdown
 ## Code Exploration Policy
 Use `cymbal` CLI for code navigation — prefer it over Read, Grep, Glob, or Bash for code exploration.
-- **Default**: `cymbal investigate <symbol>` — returns source, callers, impact, or members based on what the symbol is. Use this first.
+- **To understand a symbol**: `cymbal investigate <symbol>` — returns source, callers, impact, or members based on what the symbol is. Use this first.
+- **To trace an execution path**: `cymbal trace <symbol>` — follows the call graph downward (what does X call, what do those call).
+- **To assess change risk**: `cymbal impact <symbol>` — follows the call graph upward (what breaks if X changes).
 - Before reading a file: `cymbal outline <file>` or `cymbal show <file:L1-L2>`
 - Before searching: `cymbal search <query>` (symbols) or `cymbal search <query> --text` (grep)
 - Before exploring structure: `cymbal ls` (tree) or `cymbal ls --stats` (overview)
-- To find usage: `cymbal refs <symbol>` or `cymbal refs <symbol> --importers`
+- To disambiguate: `cymbal show path/to/file.go:SymbolName` or `cymbal investigate file.go:Symbol`
 - If a project is not indexed, run `cymbal index .` first (takes <100ms).
-- Use `cymbal show <symbol>` to read a specific function/type instead of reading the whole file.
 - All commands support `--json` for structured output.
 ```
 
 ### Why this works
 
-An agent investigating a function typically makes 2-3 sequential tool calls: search → show → refs. Each call costs a reasoning step (~500 tokens of "let me think about what to call next"). `cymbal investigate` collapses that into one call — cymbal looks at the symbol's kind and returns the right shape:
+An agent tracing an auth flow typically makes 15-20 sequential tool calls: show function → read the code → guess the next function → show that → repeat. Each call costs a reasoning step (~500 tokens). Three commands eliminate this:
 
-| Symbol kind | What you get |
-|---|---|
-| function/method | Source + callers + shallow impact chain |
-| class/struct/type | Source + members + references |
-| ambiguous name | Ranked candidates with file and kind |
+| Command | Question it answers | Direction |
+|---|---|---|
+| `investigate X` | "Tell me about X" | Adaptive (source + callers + impact or members) |
+| `trace X` | "What does X depend on?" | Downward (callees, depth 3) |
+| `impact X` | "What depends on X?" | Upward (callers, depth 2) |
 
-The agent says "I'm looking at X" and cymbal says "here's what you need to know about X, given what X is."
+`investigate` replaces search → show → refs. `trace` replaces 10+ sequential show calls to follow a call chain. Together they reduce a 22-call investigation to 4 calls.
 
 ## Supported languages
 
