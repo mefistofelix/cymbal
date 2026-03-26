@@ -2,6 +2,16 @@
 
 All notable changes to cymbal are documented here.
 
+## [0.6.0] - 2026-03-25
+
+### Added
+
+- `cymbal trace <symbol>` — downward call graph traversal. Follows what a symbol calls, what those call, etc. (BFS, depth 3 default, max 5). Filters stdlib noise to surface project-defined symbols. Complementary to `impact` (upward) and `investigate` (adaptive).
+
+### Changed
+
+- Agent integration guide (README, CLAUDE.md, AGENTS.md) restructured around three core commands: `investigate` (understand), `trace` (downward), `impact` (upward). Based on real-world observation of an agent making 22 sequential calls that trace + investigate handled in 4.
+
 ## [0.5.1] - 2026-03-25
 
 ### Fixed
