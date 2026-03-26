@@ -28,7 +28,13 @@ jobs:
           - runner: macos-latest
             goos: darwin
             goarch: arm64
+          - runner: windows-latest
+            goos: windows
+            goarch: amd64
     runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Resolve release ref
@@ -55,14 +61,22 @@ jobs:
 
       - name: Build
         run: |
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
           CGO_ENABLED=1 CGO_CFLAGS="-DSQLITE_ENABLE_FTS5" \
-            go build -trimpath -ldflags="-s -w" -o cymbal .
-          tar czf cymbal_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz cymbal
+            go build -trimpath -ldflags="-s -w" -o "cymbal${EXT}" .
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            7z a "cymbal_${{ matrix.goos }}_${{ matrix.goarch }}.zip" "cymbal${EXT}"
+          else
+            tar czf "cymbal_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz" cymbal
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: cymbal_${{ matrix.goos }}_${{ matrix.goarch }}
-          path: cymbal_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz
+          path: |
+            cymbal_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz
+            cymbal_${{ matrix.goos }}_${{ matrix.goarch }}.zip
 
   release:
     needs: build
@@ -88,10 +102,16 @@ jobs:
           cd dist
           TAG=${{ steps.tag.outputs.tag }}
           for f in cymbal_*.tar.gz; do
+            [ -e "$f" ] || continue
             arch=$(echo "$f" | sed 's/cymbal_\(.*\)\.tar\.gz/\1/' | sed 's/amd64/x86_64/')
             mv "$f" "cymbal_${TAG}_${arch}.tar.gz"
           done
-          sha256sum cymbal_*.tar.gz > checksums.txt
+          for f in cymbal_*.zip; do
+            [ -e "$f" ] || continue
+            arch=$(echo "$f" | sed 's/cymbal_\(.*\)\.zip/\1/' | sed 's/amd64/x86_64/')
+            mv "$f" "cymbal_${TAG}_${arch}.zip"
+          done
+          sha256sum cymbal_${TAG}_*.tar.gz cymbal_${TAG}_*.zip > checksums.txt
           ls -la
 
       - name: Create GitHub release
@@ -100,6 +120,7 @@ jobs:
           tag_name: ${{ steps.tag.outputs.tag }}
           files: |
             dist/cymbal_*.tar.gz
+            dist/cymbal_*.zip
             dist/checksums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

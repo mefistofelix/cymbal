@@ -2,6 +2,12 @@
 
 All notable changes to cymbal are documented here.
 
+## [0.7.1] - 2026-03-26
+
+### Added
+
+- Windows (amd64) binary in release pipeline — builds with Cgo on `windows-latest`, packaged as `.zip`.
+
 ## [0.7.0] - 2026-03-25
 
 ### Added
