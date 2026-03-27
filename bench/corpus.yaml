@@ -3,29 +3,70 @@
 # Run: go run ./bench run     (executes benchmarks)
 
 repos:
-  - name: cli
-    url: https://github.com/cli/cli
-    ref: v2.65.0
+  - name: gin
+    url: https://github.com/gin-gonic/gin
+    ref: v1.10.0
     language: go
     symbols:
-      - NewCmdRoot
-      - Repository
-      - NewHTTPClient
+      - name: New
+        file_contains: "gin.go"
+        kind: function
+        show_contains: "func New("
+        refs_min: 1
+      - name: ServeHTTP
+        file_contains: "gin.go"
+        kind: method
+        show_contains: "func (engine *Engine) ServeHTTP"
+        refs_min: 1
+      - name: HandlerFunc
+        file_contains: "gin.go"
+        kind: type
+        show_contains: "type HandlerFunc"
+        refs_min: 1
+      - name: Context
+        file_contains: "context.go"
+        kind: struct
+        show_contains: "type Context struct"
+        refs_min: 1
+
+  - name: kubectl
+    url: https://github.com/kubernetes/kubectl
+    ref: v0.32.1
+    language: go
+    symbols:
+      - name: NewCmdApply
+        file_contains: "apply.go"
+        kind: function
+        show_contains: "func NewCmdApply"
+        refs_min: 0
+      - name: NewCmdGet
+        file_contains: "get.go"
+        kind: function
+        show_contains: "func NewCmdGet"
+        refs_min: 0
+      - name: Factory
+        file_contains: "factory.go"
+        kind: interface
+        show_contains: "type Factory interface"
+        refs_min: 0
 
   - name: fastapi
     url: https://github.com/fastapi/fastapi
     ref: "0.115.6"
     language: python
     symbols:
-      - FastAPI
-      - Depends
-      - APIRouter
-
-  - name: vite
-    url: https://github.com/vitejs/vite
-    ref: v6.0.0
-    language: typescript
-    symbols:
-      - resolveConfig
-      - Plugin
-      - createServer
+      - name: FastAPI
+        file_contains: "applications.py"
+        kind: class
+        show_contains: "class FastAPI"
+        refs_min: 1
+      - name: Depends
+        file_contains: "params.py"
+        kind: class
+        show_contains: "class Depends"
+        refs_min: 1
+      - name: APIRouter
+        file_contains: "routing.py"
+        kind: class
+        show_contains: "class APIRouter"
+        refs_min: 1

@@ -1,4 +1,6 @@
-// bench/main.go — Phase 1 speed benchmark harness for cymbal.
+// bench/main.go — Benchmark harness for cymbal.
+//
+// Measures: speed, accuracy, token efficiency, JIT freshness, agent workflow savings.
 //
 // Usage:
 //
@@ -32,31 +34,37 @@ type Repo struct {
 	URL      string   `yaml:"url"`
 	Ref      string   `yaml:"ref"`
 	Language string   `yaml:"language"`
-	Symbols  []string `yaml:"symbols"`
+	Symbols  []Symbol `yaml:"symbols"`
+}
+
+type Symbol struct {
+	Name         string `yaml:"name"`
+	FileContains string `yaml:"file_contains"`
+	Kind         string `yaml:"kind"`
+	ShowContains string `yaml:"show_contains"`
+	RefsMin      int    `yaml:"refs_min"`
 }
 
 // ── Tool abstraction ───────────────────────────────────────────────
 
-// Op is a benchmark operation.
 type Op string
 
 const (
-	OpIndex   Op = "index"
-	OpReindex Op = "reindex"
-	OpSearch  Op = "search"
-	OpRefs    Op = "refs"
-	OpShow    Op = "show"
+	OpIndex       Op = "index"
+	OpReindex     Op = "reindex"
+	OpSearch      Op = "search"
+	OpRefs        Op = "refs"
+	OpShow        Op = "show"
+	OpInvestigate Op = "investigate"
 )
 
-// Tool defines how to invoke a particular tool for each operation.
 type Tool struct {
 	Name    string
-	Binary  string // binary name checked via exec.LookPath
+	Binary  string
 	Ops     map[Op]CmdFunc
-	Cleanup func(repoDir string) // optional: called before cold index
+	Cleanup func(repoDir string)
 }
 
-// CmdFunc builds an exec.Cmd for an operation. symbol is empty for index ops.
 type CmdFunc func(repoDir, symbol string) *exec.Cmd
 
 // ── Results ────────────────────────────────────────────────────────
@@ -67,7 +75,8 @@ type Result struct {
 	Op      Op
 	Symbol  string
 	Timings []time.Duration
-	Output  int // bytes of output
+	Output  int    // bytes of output
+	RawOut  string // captured output for accuracy checks
 }
 
 func (r Result) Median() time.Duration {
@@ -77,14 +86,28 @@ func (r Result) Median() time.Duration {
 	return s[len(s)/2]
 }
 
-func (r Result) Min() time.Duration {
-	m := r.Timings[0]
-	for _, t := range r.Timings[1:] {
-		if t < m {
-			m = t
-		}
-	}
-	return m
+type AccuracyCheck struct {
+	Repo    string
+	Symbol  string
+	Op      Op
+	Passed  bool
+	Details string
+}
+
+type FreshnessResult struct {
+	Repo     string
+	Scenario string
+	Latency  time.Duration
+	FilesHit int
+}
+
+type WorkflowResult struct {
+	Repo          string
+	Symbol        string
+	CymbalCalls   int
+	CymbalBytes   int
+	BaselineCalls int
+	BaselineBytes int
 }
 
 // ── Tool definitions ───────────────────────────────────────────────
@@ -92,8 +115,16 @@ func (r Result) Min() time.Duration {
 func cymbalDBPath(repoDir string) string {
 	abs, _ := filepath.Abs(repoDir)
 	h := sha256.Sum256([]byte(abs))
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".cymbal", "repos", hex.EncodeToString(h[:8]), "index.db")
+	home, _ := os.UserCacheDir()
+	if home == "" {
+		home, _ = os.UserHomeDir()
+		if home != "" {
+			home = filepath.Join(home, ".cymbal")
+		}
+	} else {
+		home = filepath.Join(home, "cymbal")
+	}
+	return filepath.Join(home, "repos", hex.EncodeToString(h[:8]), "index.db")
 }
 
 func defineTools(cymbalBin string) []Tool {
@@ -117,6 +148,9 @@ func defineTools(cymbalBin string) []Tool {
 				OpShow: func(dir, sym string) *exec.Cmd {
 					return exec.Command(cymbalBin, "show", sym)
 				},
+				OpInvestigate: func(dir, sym string) *exec.Cmd {
+					return exec.Command(cymbalBin, "investigate", sym)
+				},
 			},
 			Cleanup: func(dir string) {
 				os.Remove(cymbalDBPath(dir))
@@ -130,34 +164,12 @@ func defineTools(cymbalBin string) []Tool {
 					return exec.Command("rg", "--no-heading", "-c", sym)
 				},
 				OpRefs: func(dir, sym string) *exec.Cmd {
-					// rg has no semantic refs — just grep for the symbol name.
 					return exec.Command("rg", "--no-heading", "-n", sym)
 				},
 				OpShow: func(dir, sym string) *exec.Cmd {
-					// Approximate "show": find definition-like pattern, show context.
-					// This is what an agent would actually do without cymbal.
-					pattern := "(?:def |func |class |type |interface |struct )" + sym
+					pattern := "(?:def |func |class |type |interface |struct |async def )" + sym
 					return exec.Command("rg", "--no-heading", "-n", "-A", "30", pattern)
 				},
-			},
-		},
-		{
-			Name:   "ctags",
-			Binary: "ctags",
-			Ops: map[Op]CmdFunc{
-				OpIndex: func(dir, _ string) *exec.Cmd {
-					return exec.Command("ctags", "-R", "--fields=+n", ".")
-				},
-				OpReindex: func(dir, _ string) *exec.Cmd {
-					return exec.Command("ctags", "-R", "--fields=+n", ".")
-				},
-				OpSearch: func(dir, sym string) *exec.Cmd {
-					// readtags is the companion query tool for ctags
-					return exec.Command("readtags", "-e", "-", sym)
-				},
-			},
-			Cleanup: func(dir string) {
-				os.Remove(filepath.Join(dir, "tags"))
 			},
 		},
 	}
@@ -167,17 +179,16 @@ func defineTools(cymbalBin string) []Tool {
 
 const (
 	indexIters = 3
-	queryIters = 10
+	queryIters = 5
 	warmup     = 1
 )
 
-func timeCmd(cmd *exec.Cmd) (time.Duration, int, error) {
+func timeCmd(cmd *exec.Cmd) (time.Duration, []byte, error) {
 	start := time.Now()
 	out, err := cmd.CombinedOutput()
-	return time.Since(start), len(out), err
+	return time.Since(start), out, err
 }
 
-// preRun is an optional function called before each iteration (e.g., to reset state for cold benchmarks).
 type preRun func()
 
 func runBench(tool Tool, op Op, repoDir, symbol string, iters int, before ...preRun) Result {
@@ -188,7 +199,6 @@ func runBench(tool Tool, op Op, repoDir, symbol string, iters int, before ...pre
 		Symbol: symbol,
 	}
 
-	// Warmup runs (discarded).
 	for i := 0; i < warmup; i++ {
 		for _, fn := range before {
 			fn()
@@ -204,15 +214,252 @@ func runBench(tool Tool, op Op, repoDir, symbol string, iters int, before ...pre
 		}
 		cmd := tool.Ops[op](repoDir, symbol)
 		cmd.Dir = repoDir
-		d, n, err := timeCmd(cmd)
+		d, out, err := timeCmd(cmd)
 		if err != nil && op != OpSearch {
-			// Search may legitimately return no results for some tools.
 			fmt.Fprintf(os.Stderr, "  WARN: %s %s %s %s: %v\n", tool.Name, op, r.Repo, symbol, err)
 		}
 		r.Timings = append(r.Timings, d)
-		r.Output = n
+		r.Output = len(out)
+		r.RawOut = string(out) // keep last run for accuracy
 	}
 	return r
+}
+
+// ── Accuracy checks ────────────────────────────────────────────────
+
+func checkAccuracy(results []Result, repos []Repo) []AccuracyCheck {
+	var checks []AccuracyCheck
+
+	for _, repo := range repos {
+		for _, sym := range repo.Symbols {
+			// Check search
+			if r := findResult2(results, "cymbal", OpSearch, repo.Name, sym.Name); r != nil {
+				passed := strings.Contains(r.RawOut, sym.FileContains) &&
+					strings.Contains(r.RawOut, sym.Kind)
+				detail := ""
+				if !passed {
+					detail = fmt.Sprintf("expected file=%q kind=%q in output", sym.FileContains, sym.Kind)
+				}
+				checks = append(checks, AccuracyCheck{
+					Repo: repo.Name, Symbol: sym.Name, Op: OpSearch,
+					Passed: passed, Details: detail,
+				})
+			}
+
+			// Check show
+			if r := findResult2(results, "cymbal", OpShow, repo.Name, sym.Name); r != nil {
+				passed := strings.Contains(r.RawOut, sym.ShowContains)
+				detail := ""
+				if !passed {
+					detail = fmt.Sprintf("expected %q in show output", sym.ShowContains)
+				}
+				checks = append(checks, AccuracyCheck{
+					Repo: repo.Name, Symbol: sym.Name, Op: OpShow,
+					Passed: passed, Details: detail,
+				})
+			}
+
+			// Check refs
+			if sym.RefsMin > 0 {
+				if r := findResult2(results, "cymbal", OpRefs, repo.Name, sym.Name); r != nil {
+					// Count non-empty, non-header lines as ref indicators
+					lines := strings.Split(strings.TrimSpace(r.RawOut), "\n")
+					refLines := 0
+					for _, l := range lines {
+						if strings.Contains(l, ">") || strings.Contains(l, ":") {
+							refLines++
+						}
+					}
+					passed := refLines >= sym.RefsMin
+					detail := ""
+					if !passed {
+						detail = fmt.Sprintf("expected >=%d refs, got %d indicator lines", sym.RefsMin, refLines)
+					}
+					checks = append(checks, AccuracyCheck{
+						Repo: repo.Name, Symbol: sym.Name, Op: OpRefs,
+						Passed: passed, Details: detail,
+					})
+				}
+			}
+
+			// Check investigate
+			if r := findResult2(results, "cymbal", OpInvestigate, repo.Name, sym.Name); r != nil {
+				passed := strings.Contains(r.RawOut, sym.ShowContains)
+				detail := ""
+				if !passed {
+					detail = fmt.Sprintf("expected %q in investigate output", sym.ShowContains)
+				}
+				checks = append(checks, AccuracyCheck{
+					Repo: repo.Name, Symbol: sym.Name, Op: OpInvestigate,
+					Passed: passed, Details: detail,
+				})
+			}
+		}
+	}
+	return checks
+}
+
+// ── JIT Freshness benchmark ────────────────────────────────────────
+
+func benchFreshness(cymbalBin string, repos []Repo, corpusDir string) []FreshnessResult {
+	var results []FreshnessResult
+
+	for _, repo := range repos {
+		dir := filepath.Join(corpusDir, repo.Name)
+		sym := repo.Symbols[0].Name
+
+		// Ensure indexed first
+		cmd := exec.Command(cymbalBin, "index", ".", "--force")
+		cmd.Dir = dir
+		cmd.Run()
+
+		// Scenario 1: hot (nothing changed)
+		for i := 0; i < warmup; i++ {
+			c := exec.Command(cymbalBin, "search", sym)
+			c.Dir = dir
+			c.Run()
+		}
+		d := medianOf(func() time.Duration {
+			c := exec.Command(cymbalBin, "search", sym)
+			c.Dir = dir
+			start := time.Now()
+			c.Run()
+			return time.Since(start)
+		}, 5)
+		results = append(results, FreshnessResult{Repo: repo.Name, Scenario: "hot (no changes)", Latency: d, FilesHit: 0})
+
+		// Scenario 2: touch 1 file
+		files := findSourceFiles(dir, 5)
+		if len(files) >= 1 {
+			touch(files[0])
+			d = singleTimed(func() {
+				c := exec.Command(cymbalBin, "search", sym)
+				c.Dir = dir
+				c.Run()
+			})
+			results = append(results, FreshnessResult{Repo: repo.Name, Scenario: "1 file touched", Latency: d, FilesHit: 1})
+		}
+
+		// Scenario 3: touch 5 files
+		if len(files) >= 5 {
+			for _, f := range files[:5] {
+				touch(f)
+			}
+			d = singleTimed(func() {
+				c := exec.Command(cymbalBin, "search", sym)
+				c.Dir = dir
+				c.Run()
+			})
+			results = append(results, FreshnessResult{Repo: repo.Name, Scenario: "5 files touched", Latency: d, FilesHit: 5})
+		}
+
+		// Scenario 4: delete + query (prune)
+		if len(files) >= 1 {
+			// Create a temp file, index it, then delete
+			tmpFile := filepath.Join(dir, "_bench_tmp_delete_test.go")
+			os.WriteFile(tmpFile, []byte("package main\nfunc BenchDeleteTest() {}\n"), 0644)
+			c := exec.Command(cymbalBin, "index", ".")
+			c.Dir = dir
+			c.Run()
+			os.Remove(tmpFile)
+			d = singleTimed(func() {
+				c := exec.Command(cymbalBin, "search", sym)
+				c.Dir = dir
+				c.Run()
+			})
+			results = append(results, FreshnessResult{Repo: repo.Name, Scenario: "1 file deleted (prune)", Latency: d, FilesHit: 1})
+		}
+	}
+	return results
+}
+
+func findSourceFiles(dir string, n int) []string {
+	var files []string
+	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		ext := filepath.Ext(path)
+		switch ext {
+		case ".go", ".py", ".js", ".ts", ".rs", ".java", ".rb":
+			files = append(files, path)
+		}
+		return nil
+	})
+	if len(files) > n {
+		return files[:n]
+	}
+	return files
+}
+
+func touch(path string) {
+	now := time.Now()
+	os.Chtimes(path, now, now)
+}
+
+func medianOf(fn func() time.Duration, n int) time.Duration {
+	var times []time.Duration
+	for i := 0; i < n; i++ {
+		times = append(times, fn())
+	}
+	sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
+	return times[len(times)/2]
+}
+
+func singleTimed(fn func()) time.Duration {
+	start := time.Now()
+	fn()
+	return time.Since(start)
+}
+
+// ── Agent workflow comparison ──────────────────────────────────────
+
+func benchWorkflow(cymbalBin string, repos []Repo, corpusDir string) []WorkflowResult {
+	var results []WorkflowResult
+
+	for _, repo := range repos {
+		dir := filepath.Join(corpusDir, repo.Name)
+
+		for _, sym := range repo.Symbols {
+			// cymbal: 1 call = investigate
+			cmd := exec.Command(cymbalBin, "investigate", sym.Name)
+			cmd.Dir = dir
+			cymOut, _ := cmd.CombinedOutput()
+
+			// baseline: 3 calls = rg search + rg show + rg refs
+			var baselineBytes int
+			baselineCalls := 0
+
+			cmd = exec.Command("rg", "--no-heading", "-c", sym.Name)
+			cmd.Dir = dir
+			out, _ := cmd.CombinedOutput()
+			baselineBytes += len(out)
+			baselineCalls++
+
+			pattern := "(?:def |func |class |type |interface |struct |async def )" + sym.Name
+			cmd = exec.Command("rg", "--no-heading", "-n", "-A", "30", pattern)
+			cmd.Dir = dir
+			out, _ = cmd.CombinedOutput()
+			baselineBytes += len(out)
+			baselineCalls++
+
+			cmd = exec.Command("rg", "--no-heading", "-n", sym.Name)
+			cmd.Dir = dir
+			out, _ = cmd.CombinedOutput()
+			baselineBytes += len(out)
+			baselineCalls++
+
+			results = append(results, WorkflowResult{
+				Repo:          repo.Name,
+				Symbol:        sym.Name,
+				CymbalCalls:   1,
+				CymbalBytes:   len(cymOut),
+				BaselineCalls: baselineCalls,
+				BaselineBytes: baselineBytes,
+			})
+		}
+	}
+	return results
 }
 
 // ── Setup command ──────────────────────────────────────────────────
@@ -246,7 +493,6 @@ func cmdSetup(corpus Corpus, corpusDir string) error {
 func cmdRun(corpus Corpus, corpusDir, cymbalBin string) error {
 	tools := defineTools(cymbalBin)
 
-	// Check tool availability.
 	var available []Tool
 	for _, t := range tools {
 		if _, err := exec.LookPath(t.Binary); err != nil {
@@ -261,6 +507,8 @@ func cmdRun(corpus Corpus, corpusDir, cymbalBin string) error {
 
 	var results []Result
 
+	// Phase 1: Speed + Token Efficiency
+	fmt.Println("\n=== Phase 1: Speed + Token Efficiency ===")
 	for _, repo := range corpus.Repos {
 		dir := filepath.Join(corpusDir, repo.Name)
 		if _, err := os.Stat(dir); err != nil {
@@ -272,7 +520,6 @@ func cmdRun(corpus Corpus, corpusDir, cymbalBin string) error {
 		for _, tool := range available {
 			fmt.Printf("  %s:\n", tool.Name)
 
-			// Index (cold) — cleanup before each iteration for true cold measurement.
 			if _, ok := tool.Ops[OpIndex]; ok {
 				var before []preRun
 				if tool.Cleanup != nil {
@@ -284,7 +531,6 @@ func cmdRun(corpus Corpus, corpusDir, cymbalBin string) error {
 				results = append(results, r)
 			}
 
-			// Re-index (warm).
 			if _, ok := tool.Ops[OpReindex]; ok {
 				fmt.Printf("    reindex ...")
 				r := runBench(tool, OpReindex, dir, "", indexIters)
@@ -292,9 +538,13 @@ func cmdRun(corpus Corpus, corpusDir, cymbalBin string) error {
 				results = append(results, r)
 			}
 
-			// Queries.
-			for _, sym := range repo.Symbols {
-				for _, op := range []Op{OpSearch, OpRefs, OpShow} {
+			symNames := make([]string, len(repo.Symbols))
+			for i, s := range repo.Symbols {
+				symNames[i] = s.Name
+			}
+
+			for _, sym := range symNames {
+				for _, op := range []Op{OpSearch, OpRefs, OpShow, OpInvestigate} {
 					if _, ok := tool.Ops[op]; !ok {
 						continue
 					}
@@ -307,8 +557,41 @@ func cmdRun(corpus Corpus, corpusDir, cymbalBin string) error {
 		}
 	}
 
-	// Generate report.
-	report := generateReport(results, available)
+	// Phase 2: Accuracy
+	fmt.Println("\n=== Phase 2: Accuracy ===")
+	accuracy := checkAccuracy(results, corpus.Repos)
+	passed, total := 0, len(accuracy)
+	for _, a := range accuracy {
+		if a.Passed {
+			passed++
+			fmt.Printf("  ✓ %s/%s/%s\n", a.Repo, a.Symbol, a.Op)
+		} else {
+			fmt.Printf("  ✗ %s/%s/%s: %s\n", a.Repo, a.Symbol, a.Op, a.Details)
+		}
+	}
+	fmt.Printf("\n  Accuracy: %d/%d (%.0f%%)\n", passed, total, float64(passed)/float64(total)*100)
+
+	// Phase 3: JIT Freshness
+	fmt.Println("\n=== Phase 3: JIT Freshness ===")
+	freshness := benchFreshness(cymbalBin, corpus.Repos, corpusDir)
+	for _, f := range freshness {
+		fmt.Printf("  %s | %-25s | %v\n", f.Repo, f.Scenario, f.Latency.Round(time.Millisecond))
+	}
+
+	// Phase 4: Agent Workflow
+	fmt.Println("\n=== Phase 4: Agent Workflow ===")
+	workflows := benchWorkflow(cymbalBin, corpus.Repos, corpusDir)
+	for _, w := range workflows {
+		savings := 0
+		if w.BaselineBytes > 0 {
+			savings = 100 - (w.CymbalBytes*100)/w.BaselineBytes
+		}
+		fmt.Printf("  %s/%s: cymbal=%d calls/%dB, baseline=%d calls/%dB, savings=%d%%\n",
+			w.Repo, w.Symbol, w.CymbalCalls, w.CymbalBytes, w.BaselineCalls, w.BaselineBytes, savings)
+	}
+
+	// Generate report
+	report := generateReport(results, available, accuracy, freshness, workflows)
 	outPath := filepath.Join("bench", "RESULTS.md")
 	if err := os.WriteFile(outPath, []byte(report), 0o644); err != nil {
 		return err
@@ -319,7 +602,7 @@ func cmdRun(corpus Corpus, corpusDir, cymbalBin string) error {
 
 // ── Report generation ──────────────────────────────────────────────
 
-func generateReport(results []Result, tools []Tool) string {
+func generateReport(results []Result, tools []Tool, accuracy []AccuracyCheck, freshness []FreshnessResult, workflows []WorkflowResult) string {
 	var b strings.Builder
 
 	b.WriteString("# Cymbal Benchmark Results\n\n")
@@ -327,28 +610,23 @@ func generateReport(results []Result, tools []Tool) string {
 	b.WriteString(fmt.Sprintf("**Platform:** %s/%s  \n", runtime.GOOS, runtime.GOARCH))
 	b.WriteString(fmt.Sprintf("**CPU:** %d cores  \n\n", runtime.NumCPU()))
 
-	// Group by repo.
-	byRepo := map[string][]Result{}
-	for _, r := range results {
-		byRepo[r.Repo] = append(byRepo[r.Repo], r)
-	}
-
-	// Sorted repo names.
-	repos := make([]string, 0, len(byRepo))
-	for k := range byRepo {
-		repos = append(repos, k)
-	}
-	sort.Strings(repos)
-
 	toolNames := make([]string, len(tools))
 	for i, t := range tools {
 		toolNames[i] = t.Name
 	}
 
+	// Group results by repo
+	byRepo := map[string][]Result{}
+	for _, r := range results {
+		byRepo[r.Repo] = append(byRepo[r.Repo], r)
+	}
+	repos := sortedKeys(byRepo)
+
+	// ── Per-repo speed + token tables ──
 	for _, repo := range repos {
 		b.WriteString(fmt.Sprintf("## %s\n\n", repo))
 
-		// Index/reindex table.
+		// Indexing
 		b.WriteString("### Indexing\n\n")
 		b.WriteString("| Operation |")
 		for _, tn := range toolNames {
@@ -363,7 +641,7 @@ func generateReport(results []Result, tools []Tool) string {
 		for _, op := range []Op{OpIndex, OpReindex} {
 			b.WriteString(fmt.Sprintf("| %s |", op))
 			for _, tn := range toolNames {
-				r := findResult(byRepo[repo], tn, op, "")
+				r := findResult2(results, tn, op, repo, "")
 				if r == nil {
 					b.WriteString(" — |")
 				} else {
@@ -374,7 +652,7 @@ func generateReport(results []Result, tools []Tool) string {
 		}
 		b.WriteString("\n")
 
-		// Query tables — speed.
+		// Query speed
 		b.WriteString("### Query Speed\n\n")
 		b.WriteString("| Symbol | Op |")
 		for _, tn := range toolNames {
@@ -386,25 +664,11 @@ func generateReport(results []Result, tools []Tool) string {
 		}
 		b.WriteString("\n")
 
-		// Collect unique (symbol, op) pairs.
-		type symOp struct{ sym, op string }
-		seen := map[symOp]bool{}
-		var pairs []symOp
-		for _, r := range byRepo[repo] {
-			if r.Op == OpIndex || r.Op == OpReindex {
-				continue
-			}
-			so := symOp{r.Symbol, string(r.Op)}
-			if !seen[so] {
-				seen[so] = true
-				pairs = append(pairs, so)
-			}
-		}
-
+		pairs := collectPairs(byRepo[repo])
 		for _, p := range pairs {
 			b.WriteString(fmt.Sprintf("| `%s` | %s |", p.sym, p.op))
 			for _, tn := range toolNames {
-				r := findResult(byRepo[repo], tn, Op(p.op), p.sym)
+				r := findResult2(results, tn, Op(p.op), repo, p.sym)
 				if r == nil {
 					b.WriteString(" — |")
 				} else {
@@ -415,45 +679,121 @@ func generateReport(results []Result, tools []Tool) string {
 		}
 		b.WriteString("\n")
 
-		// Query tables — output size (token efficiency).
-		b.WriteString("### Output Size (Token Efficiency)\n\n")
-		b.WriteString("| Symbol | Op |")
-		for _, tn := range toolNames {
-			b.WriteString(fmt.Sprintf(" %s |", tn))
-		}
-		b.WriteString("\n|---|---|")
-		for range toolNames {
-			b.WriteString("---|")
-		}
-		b.WriteString("\n")
+		// Token efficiency with savings ratio
+		b.WriteString("### Token Efficiency\n\n")
+		b.WriteString("| Symbol | Op | cymbal | ripgrep | savings |\n")
+		b.WriteString("|---|---|---|---|---|\n")
 
 		for _, p := range pairs {
-			b.WriteString(fmt.Sprintf("| `%s` | %s |", p.sym, p.op))
-			for _, tn := range toolNames {
-				r := findResult(byRepo[repo], tn, Op(p.op), p.sym)
-				if r == nil {
-					b.WriteString(" — |")
+			cymR := findResult2(results, "cymbal", Op(p.op), repo, p.sym)
+			rgR := findResult2(results, "ripgrep", Op(p.op), repo, p.sym)
+
+			cymTok, rgTok, savingsStr := "—", "—", "—"
+			if cymR != nil {
+				cymTok = fmt.Sprintf("%s (~%d tok)", fmtBytes(cymR.Output), cymR.Output/4)
+			}
+			if rgR != nil {
+				rgTok = fmt.Sprintf("%s (~%d tok)", fmtBytes(rgR.Output), rgR.Output/4)
+			}
+			if cymR != nil && rgR != nil && rgR.Output > 0 {
+				savings := 100 - (cymR.Output*100)/rgR.Output
+				if savings < 0 {
+					savingsStr = fmt.Sprintf("-%d%%", -savings)
 				} else {
-					tokens := r.Output / 4 // rough cl100k_base approximation
-					b.WriteString(fmt.Sprintf(" %s (~%d tok) |", fmtBytes(r.Output), tokens))
+					savingsStr = fmt.Sprintf("**%d%%**", savings)
 				}
 			}
-			b.WriteString("\n")
+			b.WriteString(fmt.Sprintf("| `%s` | %s | %s | %s | %s |\n", p.sym, p.op, cymTok, rgTok, savingsStr))
 		}
 		b.WriteString("\n")
 	}
+
+	// ── Accuracy ──
+	b.WriteString("## Accuracy\n\n")
+	b.WriteString("| Repo | Symbol | Op | Result |\n")
+	b.WriteString("|---|---|---|---|\n")
+	passed, total := 0, len(accuracy)
+	for _, a := range accuracy {
+		mark := "✓"
+		if !a.Passed {
+			mark = "✗ " + a.Details
+		} else {
+			passed++
+		}
+		b.WriteString(fmt.Sprintf("| %s | `%s` | %s | %s |\n", a.Repo, a.Symbol, a.Op, mark))
+	}
+	b.WriteString(fmt.Sprintf("\n**Overall: %d/%d (%.0f%%)**\n\n", passed, total, float64(passed)/float64(total)*100))
+
+	// ── JIT Freshness ──
+	b.WriteString("## JIT Freshness\n\n")
+	b.WriteString("| Repo | Scenario | Latency |\n")
+	b.WriteString("|---|---|---|\n")
+	for _, f := range freshness {
+		b.WriteString(fmt.Sprintf("| %s | %s | %s |\n", f.Repo, f.Scenario, fmtDuration(f.Latency)))
+	}
+	b.WriteString("\n")
+
+	// ── Agent Workflow ──
+	b.WriteString("## Agent Workflow: cymbal investigate vs ripgrep\n\n")
+	b.WriteString("| Repo | Symbol | cymbal | baseline (rg×3) | savings |\n")
+	b.WriteString("|---|---|---|---|---|\n")
+	for _, w := range workflows {
+		savings := 0
+		if w.BaselineBytes > 0 {
+			savings = 100 - (w.CymbalBytes*100)/w.BaselineBytes
+		}
+		savingsStr := fmt.Sprintf("%d%%", savings)
+		if savings > 0 {
+			savingsStr = fmt.Sprintf("**%d%%**", savings)
+		}
+		b.WriteString(fmt.Sprintf("| %s | `%s` | %d call, %s (~%d tok) | %d calls, %s (~%d tok) | %s |\n",
+			w.Repo, w.Symbol,
+			w.CymbalCalls, fmtBytes(w.CymbalBytes), w.CymbalBytes/4,
+			w.BaselineCalls, fmtBytes(w.BaselineBytes), w.BaselineBytes/4,
+			savingsStr))
+	}
+	b.WriteString("\n")
 
 	return b.String()
 }
 
-func findResult(results []Result, tool string, op Op, symbol string) *Result {
+// ── Helpers ────────────────────────────────────────────────────────
+
+func findResult2(results []Result, tool string, op Op, repo, symbol string) *Result {
 	for i := range results {
 		r := &results[i]
-		if r.Tool == tool && r.Op == op && r.Symbol == symbol {
+		if r.Tool == tool && r.Op == op && r.Repo == repo && r.Symbol == symbol {
 			return r
 		}
 	}
 	return nil
+}
+
+type symOp struct{ sym, op string }
+
+func collectPairs(results []Result) []symOp {
+	seen := map[symOp]bool{}
+	var pairs []symOp
+	for _, r := range results {
+		if r.Op == OpIndex || r.Op == OpReindex {
+			continue
+		}
+		so := symOp{r.Symbol, string(r.Op)}
+		if !seen[so] {
+			seen[so] = true
+			pairs = append(pairs, so)
+		}
+	}
+	return pairs
+}
+
+func sortedKeys(m map[string][]Result) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func fmtDuration(d time.Duration) string {
@@ -470,7 +810,10 @@ func fmtBytes(n int) string {
 	if n < 1024 {
 		return fmt.Sprintf("%dB", n)
 	}
-	return fmt.Sprintf("%.1fKB", float64(n)/1024)
+	if n < 1024*1024 {
+		return fmt.Sprintf("%.1fKB", float64(n)/1024)
+	}
+	return fmt.Sprintf("%.1fMB", float64(n)/(1024*1024))
 }
 
 // ── Entrypoint ─────────────────────────────────────────────────────
@@ -496,7 +839,6 @@ func main() {
 
 	corpusDir := filepath.Join("bench", ".corpus")
 
-	// Resolve cymbal binary: prefer freshly built one.
 	cymbalBin := "cymbal"
 	if bin, err := exec.LookPath("./cymbal"); err == nil {
 		cymbalBin, _ = filepath.Abs(bin)
