@@ -86,14 +86,15 @@ func printStructure(r *index.StructureResult) {
 		fmt.Println()
 	}
 
-	// Suggested commands
+	// Suggested commands (deduplicated by name)
 	if len(r.TopByRefs) > 0 {
 		fmt.Println("Try:")
-		top := r.TopByRefs
-		if len(top) > 3 {
-			top = top[:3]
-		}
-		for _, s := range top {
+		seen := map[string]bool{}
+		for _, s := range r.TopByRefs {
+			if seen[s.Name] || len(seen) >= 3 {
+				continue
+			}
+			seen[s.Name] = true
 			fmt.Printf("  cymbal investigate %s\n", s.Name)
 		}
 		if len(r.EntryPoints) > 0 {
