@@ -74,7 +74,7 @@ Add `.cymbal/` to your `.gitignore` to keep the index out of version control.
 Define a shell alias once so every command looks like the native binary:
 
 ```sh
-alias cymbal='docker run --rm -v $(pwd):/workspace cymbal'
+alias cymbal='docker run --rm -v "$(pwd)":/workspace cymbal'
 ```
 
 Then:
@@ -154,17 +154,17 @@ Use `cymbal` CLI for code navigation — prefer it over Read, Grep, Glob, or Bas
 ```markdown
 ## Code Exploration Policy
 Use `cymbal` via Docker for code navigation — prefer it over Read, Grep, Glob, or Bash for code exploration.
-Run all cymbal commands as: `docker run --rm -v $(pwd):/workspace cymbal <command>`
-- **New to a repo?**: `docker run --rm -v $(pwd):/workspace cymbal structure` — entry points, hotspots, central packages. Start here.
-- **To understand a symbol**: `docker run --rm -v $(pwd):/workspace cymbal investigate <symbol>` — returns source, callers, impact, or members based on what the symbol is.
-- **To understand multiple symbols**: `docker run --rm -v $(pwd):/workspace cymbal investigate Foo Bar Baz` — batch mode, one invocation.
-- **To trace an execution path**: `docker run --rm -v $(pwd):/workspace cymbal trace <symbol>` — follows the call graph downward (what does X call, what do those call).
-- **To assess change risk**: `docker run --rm -v $(pwd):/workspace cymbal impact <symbol>` — follows the call graph upward (what breaks if X changes).
-- Before reading a file: `docker run --rm -v $(pwd):/workspace cymbal outline <file>` or `cymbal show <file:L1-L2>`
-- Before searching: `docker run --rm -v $(pwd):/workspace cymbal search <query>` (symbols) or add `--text` for grep
-- Before exploring structure: `docker run --rm -v $(pwd):/workspace cymbal ls` or `cymbal ls --stats`
-- To disambiguate: `docker run --rm -v $(pwd):/workspace cymbal investigate path/to/file.go:Symbol`
-- First run: `docker run --rm -v $(pwd):/workspace cymbal index .` to build the initial index. After that, queries auto-refresh — no manual reindexing needed.
+Run all cymbal commands as: `docker run --rm -v "$(pwd)":/workspace cymbal <command>`
+- **New to a repo?**: `docker run --rm -v "$(pwd)":/workspace cymbal structure` — entry points, hotspots, central packages. Start here.
+- **To understand a symbol**: `docker run --rm -v "$(pwd)":/workspace cymbal investigate <symbol>` — returns source, callers, impact, or members based on what the symbol is.
+- **To understand multiple symbols**: `docker run --rm -v "$(pwd)":/workspace cymbal investigate Foo Bar Baz` — batch mode, one invocation.
+- **To trace an execution path**: `docker run --rm -v "$(pwd)":/workspace cymbal trace <symbol>` — follows the call graph downward (what does X call, what do those call).
+- **To assess change risk**: `docker run --rm -v "$(pwd)":/workspace cymbal impact <symbol>` — follows the call graph upward (what breaks if X changes).
+- Before reading a file: `docker run --rm -v "$(pwd)":/workspace cymbal outline <file>` or `docker run --rm -v "$(pwd)":/workspace cymbal show <file:L1-L2>`
+- Before searching: `docker run --rm -v "$(pwd)":/workspace cymbal search <query>` (symbols) or add `--text` for grep
+- Before exploring structure: `docker run --rm -v "$(pwd)":/workspace cymbal ls` or `docker run --rm -v "$(pwd)":/workspace cymbal ls --stats`
+- To disambiguate: `docker run --rm -v "$(pwd)":/workspace cymbal investigate path/to/file.go:Symbol`
+- First run: `docker run --rm -v "$(pwd)":/workspace cymbal index .` to build the initial index. After that, queries auto-refresh — no manual reindexing needed.
 - The SQLite index is stored at `.cymbal/index.db` in the repo root and persists between runs.
 - All commands support `--json` for structured output.
 ```
