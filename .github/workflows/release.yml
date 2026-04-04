@@ -29,9 +29,10 @@ jobs:
           - runner: macos-latest
             goos: darwin
             goarch: arm64
-          - runner: macos-13
+          - runner: macos-latest
             goos: darwin
             goarch: amd64
+            cross: true
           - runner: windows-latest
             goos: windows
             goarch: amd64
@@ -61,17 +62,24 @@ jobs:
           cache: true
 
       - name: Run tests
+        if: ${{ !matrix.cross }}
         run: CGO_CFLAGS="-DSQLITE_ENABLE_FTS5" go test ./...
 
       - name: Build
         run: |
           EXT=""
           LDFLAGS="-s -w"
+          CGO_FLAGS="-DSQLITE_ENABLE_FTS5"
           if [ "${{ matrix.goos }}" = "windows" ]; then
             EXT=".exe"
             LDFLAGS="$LDFLAGS -extldflags -static"
           fi
-          CGO_ENABLED=1 CGO_CFLAGS="-DSQLITE_ENABLE_FTS5" \
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            CGO_FLAGS="$CGO_FLAGS -arch x86_64"
+            export CGO_LDFLAGS="-arch x86_64"
+          fi
+          CGO_ENABLED=1 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            CGO_CFLAGS="$CGO_FLAGS" \
             go build -trimpath -ldflags="$LDFLAGS" -o "cymbal${EXT}" .
           if [ "${{ matrix.goos }}" = "windows" ]; then
             7z a "cymbal_${{ matrix.goos }}_${{ matrix.goarch }}.zip" "cymbal${EXT}"
