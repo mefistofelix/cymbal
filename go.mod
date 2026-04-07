@@ -4,6 +4,7 @@ go 1.25.8
 
 require (
 	github.com/1broseidon/oneagent v0.12.0
+	github.com/lynxbat/go-tree-sitter-apex v0.0.0-20260405201437-d6c57d53f85c
 	github.com/mattn/go-sqlite3 v1.14.37
 	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 	github.com/spf13/cobra v1.10.2

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
+	apex "github.com/lynxbat/go-tree-sitter-apex"
 	"github.com/smacker/go-tree-sitter/bash"
 	"github.com/smacker/go-tree-sitter/c"
 	"github.com/smacker/go-tree-sitter/cpp"
@@ -32,6 +33,7 @@ import (
 )
 
 var languages = map[string]*sitter.Language{
+	"apex":       apex.GetLanguage(),
 	"go":         golang.GetLanguage(),
 	"python":     python.GetLanguage(),
 	"javascript": javascript.GetLanguage(),
@@ -168,7 +170,7 @@ func (e *symbolExtractor) extractImport(node *sitter.Node) (symbols.Import, bool
 		return e.extractImportJS(nodeType, node)
 	case "rust":
 		return e.extractImportRust(nodeType, node)
-	case "java", "scala":
+	case "apex", "java", "scala":
 		return e.extractImportJVM(nodeType, node)
 	case "kotlin":
 		return e.extractImportKotlin(nodeType, node)
@@ -300,7 +302,7 @@ func (e *symbolExtractor) extractRef(node *sitter.Node) (symbols.Ref, bool) {
 		return e.extractRefCallExpr(nodeType, node)
 	case "python":
 		return e.extractRefPythonCall(nodeType, node)
-	case "java", "scala":
+	case "apex", "java", "scala":
 		return e.extractRefJVM(nodeType, node)
 	case "kotlin":
 		return e.extractRefKotlin(nodeType, node)
@@ -468,7 +470,7 @@ func (e *symbolExtractor) classifyNode(nodeType string, node *sitter.Node) (stri
 		return e.classifyJS(nodeType, node)
 	case "rust":
 		return e.classifyRust(nodeType, node)
-	case "java", "scala":
+	case "apex", "java", "scala":
 		return e.classifyJavaLike(nodeType, node)
 	case "kotlin":
 		return e.classifyKotlin(nodeType, node)
