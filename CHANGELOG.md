@@ -2,6 +2,17 @@
 
 All notable changes to cymbal are documented here.
 
+## [0.8.7] - 2026-04-07
+
+### Added
+
+- **Salesforce Apex language support** — classes, methods, fields, constructors, interfaces, and enums via `classifyJavaLike` reuse (PR #6, @lynxbat).
+- **Dart language support** — classes, enums, mixins, extensions, type aliases, functions, methods, getters, setters, constructors, imports, and refs (PR #11, @Phototonic).
+
+### Fixed
+
+- **investigate member bleed across files** — `investigate` no longer mixes members from different symbols that share the same parent name across files or languages. Member lookup is now scoped to the resolved symbol's file. Fixes #9.
+
 ## [0.8.6] - 2026-04-06
 
 ### Added

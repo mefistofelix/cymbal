@@ -324,3 +324,69 @@ func TestFeatureStoreImportsAndRefs(t *testing.T) {
 		t.Errorf("expected ref on line 10, got %d", refs[0].Line)
 	}
 }
+
+func TestFeatureStoreChildSymbolsFileScoped(t *testing.T) {
+	store, _ := newTestStore(t)
+	now := time.Now()
+
+	// Two files with a type named "Tables" — simulates Java + Kotlin collision from issue #9.
+	fid1, err := store.UpsertFile("/repo/Tables.java", "Tables.java", "java", "h1", now, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = store.InsertSymbols(fid1, []symbols.Symbol{
+		{Name: "Tables", Kind: "class", File: "/repo/Tables.java", StartLine: 1, EndLine: 20, Language: "java"},
+		{Name: "USERS", Kind: "field", File: "/repo/Tables.java", StartLine: 3, EndLine: 3, Parent: "Tables", Language: "java"},
+		{Name: "ORDERS", Kind: "field", File: "/repo/Tables.java", StartLine: 4, EndLine: 4, Parent: "Tables", Language: "java"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fid2, err := store.UpsertFile("/repo/Tables.kt", "Tables.kt", "kotlin", "h2", now, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = store.InsertSymbols(fid2, []symbols.Symbol{
+		{Name: "Tables", Kind: "object", File: "/repo/Tables.kt", StartLine: 1, EndLine: 10, Language: "kotlin"},
+		{Name: "users", Kind: "field", File: "/repo/Tables.kt", StartLine: 3, EndLine: 3, Parent: "Tables", Language: "kotlin"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Unscoped: returns members from both files.
+	all, err := store.ChildSymbols("Tables", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 {
+		t.Errorf("unscoped ChildSymbols: expected 3 members, got %d", len(all))
+	}
+
+	// Scoped to Java file: only Java members.
+	java, err := store.ChildSymbols("Tables", 50, "/repo/Tables.java")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(java) != 2 {
+		t.Errorf("Java-scoped ChildSymbols: expected 2 members, got %d", len(java))
+	}
+	for _, m := range java {
+		if m.File != "/repo/Tables.java" {
+			t.Errorf("Java-scoped member %q came from %s", m.Name, m.File)
+		}
+	}
+
+	// Scoped to Kotlin file: only Kotlin members.
+	kt, err := store.ChildSymbols("Tables", 50, "/repo/Tables.kt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kt) != 1 {
+		t.Errorf("Kotlin-scoped ChildSymbols: expected 1 member, got %d", len(kt))
+	}
+	if len(kt) > 0 && kt[0].Name != "users" {
+		t.Errorf("Kotlin-scoped member: expected 'users', got %q", kt[0].Name)
+	}
+}

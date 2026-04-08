@@ -821,14 +821,28 @@ func (s *Store) FileSymbols(filePath string) ([]SymbolResult, error) {
 }
 
 // ChildSymbols returns symbols whose parent matches the given name (e.g., methods on a type).
-func (s *Store) ChildSymbols(parentName string, limit int) ([]SymbolResult, error) {
-	rows, err := s.db.Query(`
-		SELECT s.name, s.kind, f.path, f.rel_path, s.start_line, s.end_line, s.parent, s.depth, s.signature, COALESCE(s.summary, ''), s.language
-		FROM symbols s JOIN files f ON s.file_id = f.id
-		WHERE s.parent = ?
-		ORDER BY s.start_line
-		LIMIT ?
-	`, parentName, limit)
+// When filePath is non-empty the results are scoped to that file, preventing
+// member bleed when different files contain types with the same name.
+func (s *Store) ChildSymbols(parentName string, limit int, filePath ...string) ([]SymbolResult, error) {
+	var rows *sql.Rows
+	var err error
+	if len(filePath) > 0 && filePath[0] != "" {
+		rows, err = s.db.Query(`
+			SELECT s.name, s.kind, f.path, f.rel_path, s.start_line, s.end_line, s.parent, s.depth, s.signature, COALESCE(s.summary, ''), s.language
+			FROM symbols s JOIN files f ON s.file_id = f.id
+			WHERE s.parent = ? AND f.path = ?
+			ORDER BY s.start_line
+			LIMIT ?
+		`, parentName, filePath[0], limit)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT s.name, s.kind, f.path, f.rel_path, s.start_line, s.end_line, s.parent, s.depth, s.signature, COALESCE(s.summary, ''), s.language
+			FROM symbols s JOIN files f ON s.file_id = f.id
+			WHERE s.parent = ?
+			ORDER BY s.start_line
+			LIMIT ?
+		`, parentName, limit)
+	}
 	if err != nil {
 		return nil, err
 	}

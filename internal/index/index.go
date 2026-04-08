@@ -928,7 +928,7 @@ func Investigate(dbPath, symbolName string, opts ...InvestigateOpts) (*Investiga
 
 	case "class", "struct", "type", "interface", "trait", "enum", "object", "mixin", "extension":
 		res.Kind = "type"
-		res.Members, _ = store.ChildSymbols(sym.Name, 50)
+		res.Members, _ = store.ChildSymbols(sym.Name, 50, sym.File)
 		// For types, show who references the type name.
 		res.Refs, _ = store.FindReferences(sym.Name, 20)
 
@@ -979,7 +979,7 @@ func InvestigateResolved(dbPath string, sym SymbolResult) (*InvestigateResult, e
 		res.Impact, _ = store.FindImpact(sym.Name, 2, 20)
 	case "class", "struct", "type", "interface", "trait", "enum", "object", "mixin", "extension":
 		res.Kind = "type"
-		res.Members, _ = store.ChildSymbols(sym.Name, 50)
+		res.Members, _ = store.ChildSymbols(sym.Name, 50, sym.File)
 		res.Refs, _ = store.FindReferences(sym.Name, 20)
 	default:
 		res.Kind = sym.Kind
