@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	dart "github.com/UserNobody14/tree-sitter-dart/bindings/go"
 	sitter "github.com/smacker/go-tree-sitter"
 	apex "github.com/lynxbat/go-tree-sitter-apex"
 	"github.com/smacker/go-tree-sitter/bash"
@@ -44,6 +45,7 @@ var languages = map[string]*sitter.Language{
 	"c":          c.GetLanguage(),
 	"cpp":        cpp.GetLanguage(),
 	"csharp":     csharp.GetLanguage(),
+	"dart":       sitter.NewLanguage(dart.Language()),
 	"swift":      swift.GetLanguage(),
 	"kotlin":     kotlin.GetLanguage(),
 	"lua":        lua.GetLanguage(),
@@ -182,6 +184,8 @@ func (e *symbolExtractor) extractImport(node *sitter.Node) (symbols.Import, bool
 		return e.extractImportElixir(nodeType, node)
 	case "protobuf":
 		return e.extractImportProtobuf(nodeType, node)
+	case "dart":
+		return e.extractImportDart(nodeType, node)
 	}
 	return symbols.Import{}, false
 }
@@ -310,6 +314,8 @@ func (e *symbolExtractor) extractRef(node *sitter.Node) (symbols.Ref, bool) {
 		return e.extractRefRuby(nodeType, node)
 	case "elixir":
 		return e.extractRefElixir(nodeType, node)
+	case "dart":
+		return e.extractRefDart(nodeType, node)
 	}
 	return symbols.Ref{}, false
 }
@@ -484,6 +490,8 @@ func (e *symbolExtractor) classifyNode(nodeType string, node *sitter.Node) (stri
 		return e.classifyHCL(nodeType, node)
 	case "protobuf":
 		return e.classifyProtobuf(nodeType, node)
+	case "dart":
+		return e.classifyDart(nodeType, node)
 	default:
 		return e.classifyGeneric(nodeType, node)
 	}
@@ -682,6 +690,22 @@ func findChildByType(node *sitter.Node, typeName string) *sitter.Node {
 		c := node.Child(i)
 		if c.Type() == typeName {
 			return c
+		}
+	}
+	return nil
+}
+
+// findDescendantByType returns the first descendant (BFS) with the given type.
+func findDescendantByType(node *sitter.Node, typeName string) *sitter.Node {
+	for i := range int(node.ChildCount()) {
+		c := node.Child(i)
+		if c.Type() == typeName {
+			return c
+		}
+	}
+	for i := range int(node.ChildCount()) {
+		if found := findDescendantByType(node.Child(i), typeName); found != nil {
+			return found
 		}
 	}
 	return nil
@@ -937,6 +961,136 @@ func protoNameNode(node *sitter.Node, childType string) *sitter.Node {
 	return nil
 }
 
+// dartInsideClassBody reports whether node sits inside a class_body,
+// enum_body, extension_body, or mixin body — i.e. its declaration is a member.
+func dartInsideClassBody(node *sitter.Node) bool {
+	p := node.Parent()
+	for p != nil {
+		t := p.Type()
+		if t == "class_body" || t == "enum_body" || t == "extension_body" {
+			return true
+		}
+		if t == "program" {
+			return false
+		}
+		p = p.Parent()
+	}
+	return false
+}
+
+func (e *symbolExtractor) classifyDart(nodeType string, node *sitter.Node) (string, *sitter.Node) {
+	switch nodeType {
+	case "class_definition":
+		return "class", node.ChildByFieldName("name")
+	case "enum_declaration":
+		return "enum", node.ChildByFieldName("name")
+	case "mixin_declaration":
+		return "mixin", findChildByType(node, "identifier")
+	case "extension_declaration":
+		return "extension", node.ChildByFieldName("name")
+	case "type_alias":
+		return "type", findChildByType(node, "type_identifier")
+	case "function_signature":
+		kind := "function"
+		if dartInsideClassBody(node) {
+			kind = "method"
+		}
+		return kind, node.ChildByFieldName("name")
+	case "getter_signature":
+		return "getter", node.ChildByFieldName("name")
+	case "setter_signature":
+		return "setter", node.ChildByFieldName("name")
+	case "constructor_signature":
+		return "constructor", node.ChildByFieldName("name")
+	case "factory_constructor_signature":
+		// factory Foo.named() — first identifier child is the class name.
+		return "constructor", findChildByType(node, "identifier")
+	case "constant_constructor_signature":
+		return "constructor", findChildByType(node, "identifier")
+	}
+	return "", nil
+}
+
+func (e *symbolExtractor) extractImportDart(nodeType string, node *sitter.Node) (symbols.Import, bool) {
+	if nodeType != "import_or_export" {
+		return symbols.Import{}, false
+	}
+	// Dart: import 'package:foo/bar.dart';
+	// AST: import_or_export → library_import → import_specification → configurable_uri → uri → string_literal
+	// Walk descendants to find the configurable_uri node.
+	if uri := findDescendantByType(node, "configurable_uri"); uri != nil {
+		raw := strings.Trim(uri.Content(e.src), "'\"")
+		return symbols.Import{RawPath: raw, Language: e.lang}, true
+	}
+	// Fallback: use the full statement text.
+	return symbols.Import{RawPath: node.Content(e.src), Language: e.lang}, true
+}
+
+func (e *symbolExtractor) extractRefDart(nodeType string, node *sitter.Node) (symbols.Ref, bool) {
+	// Dart call expressions are encoded as sibling sequences under a parent
+	// (expression_statement, initialized_variable_definition, etc.):
+	//
+	//   Top-level call  print(x)        → identifier("print"),  selector(argument_part)
+	//   Method call     c.area()        → identifier("c"),  selector(.area),  selector(argument_part)
+	//   Constructor     Circle(5.0)     → identifier("Circle"), selector(argument_part)
+	//
+	// We trigger on a selector node that contains an argument_part (the "(…)").
+	// Then we look at the preceding sibling to determine the callee name.
+	if nodeType != "selector" || !hasChildOfType(node, "argument_part") {
+		return symbols.Ref{}, false
+	}
+
+	parent := node.Parent()
+	if parent == nil {
+		return symbols.Ref{}, false
+	}
+
+	// Find this node's index among its siblings.
+	idx := -1
+	for i := range int(parent.ChildCount()) {
+		if parent.Child(i) == node {
+			idx = i
+			break
+		}
+	}
+	if idx < 1 {
+		return symbols.Ref{}, false
+	}
+
+	prev := parent.Child(idx - 1)
+
+	// Case 1: Previous sibling is a selector with unconditional_assignable_selector
+	// → method call like c.area() — the ".area" selector precedes the "()" selector.
+	if prev.Type() == "selector" {
+		uas := findChildByType(prev, "unconditional_assignable_selector")
+		if uas != nil {
+			id := findChildByType(uas, "identifier")
+			if id != nil {
+				return symbols.Ref{
+					Name:     id.Content(e.src),
+					Line:     int(node.StartPoint().Row) + 1,
+					Language: e.lang,
+				}, true
+			}
+		}
+		return symbols.Ref{}, false
+	}
+
+	// Case 2: Previous sibling is an identifier → top-level / constructor call.
+	if prev.Type() == "identifier" {
+		name := prev.Content(e.src)
+		if name != "" {
+			return symbols.Ref{
+				Name:     name,
+				Line:     int(node.StartPoint().Row) + 1,
+				Language: e.lang,
+			}, true
+		}
+	}
+
+	return symbols.Ref{}, false
+}
+
 func (e *symbolExtractor) classifyGeneric(nodeType string, node *sitter.Node) (string, *sitter.Node) {
 	switch nodeType {
 	case "function_definition", "function_declaration":
@@ -951,7 +1105,7 @@ func (e *symbolExtractor) classifyGeneric(nodeType string, node *sitter.Node) (s
 
 func (e *symbolExtractor) extractSignature(node *sitter.Node, kind string) string {
 	switch kind {
-	case "function", "method":
+	case "function", "method", "constructor", "getter", "setter":
 		params := node.ChildByFieldName("parameters")
 		if params != nil {
 			return params.Content(e.src)
@@ -960,7 +1114,11 @@ func (e *symbolExtractor) extractSignature(node *sitter.Node, kind string) strin
 		if fvp := findChildByType(node, "function_value_parameters"); fvp != nil {
 			return fvp.Content(e.src)
 		}
-	case "struct", "class", "interface", "trait", "object", "enum":
+		// Dart grammar uses formal_parameter_list.
+		if fpl := findChildByType(node, "formal_parameter_list"); fpl != nil {
+			return fpl.Content(e.src)
+		}
+	case "struct", "class", "interface", "trait", "object", "enum", "mixin", "extension":
 		content := node.Content(e.src)
 		for i, ch := range content {
 			if ch == '\n' || ch == '{' {
