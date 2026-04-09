@@ -30,7 +30,7 @@ import (
 	"github.com/smacker/go-tree-sitter/typescript/typescript"
 	"github.com/smacker/go-tree-sitter/yaml"
 
-	"github.com/1broseidon/cymbal/internal/symbols"
+	"github.com/1broseidon/cymbal/symbols"
 )
 
 var languages = map[string]*sitter.Language{

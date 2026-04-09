@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/1broseidon/cymbal/internal/index"
+	"github.com/1broseidon/cymbal/index"
 	"github.com/spf13/cobra"
 )
 

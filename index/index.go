@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/1broseidon/cymbal/internal/parser"
-	"github.com/1broseidon/cymbal/internal/symbols"
-	"github.com/1broseidon/cymbal/internal/walker"
+	"github.com/1broseidon/cymbal/parser"
+	"github.com/1broseidon/cymbal/symbols"
+	"github.com/1broseidon/cymbal/walker"
 )
 
 // Options controls indexing behavior.

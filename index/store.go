@@ -12,7 +12,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/1broseidon/cymbal/internal/symbols"
+	"github.com/1broseidon/cymbal/symbols"
 )
 
 const schema = `

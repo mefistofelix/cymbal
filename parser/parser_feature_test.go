@@ -3,7 +3,7 @@ package parser
 import (
 	"testing"
 
-	"github.com/1broseidon/cymbal/internal/symbols"
+	"github.com/1broseidon/cymbal/symbols"
 )
 
 // --- Helpers ---

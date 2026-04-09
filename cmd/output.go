@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/1broseidon/cymbal/internal/index"
-	"github.com/1broseidon/cymbal/internal/walker"
+	"github.com/1broseidon/cymbal/index"
+	"github.com/1broseidon/cymbal/walker"
 )
 
 // writeJSON writes a versioned JSON envelope to stdout.

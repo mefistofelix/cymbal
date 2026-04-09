@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/1broseidon/cymbal/internal/symbols"
+	"github.com/1broseidon/cymbal/symbols"
 )
 
 func newTestStore(t *testing.T) (*Store, string) {
