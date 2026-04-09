@@ -13,12 +13,8 @@ import (
 var indexCmd = &cobra.Command{
 	Use:   "index [path]",
 	Short: "Index a directory for symbol discovery",
-	Long: `Index a directory for symbol discovery. Use --summarize to generate AI summaries
-for each symbol using your installed agent CLI (claude, codex, etc.).
-
-No API keys required — cymbal uses oneagent to invoke whatever agent backend
-you already have installed and authenticated.`,
-	Args: cobra.MaximumNArgs(1),
+	Long:  `Index a directory for symbol discovery.`,
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := "."
 		if len(args) > 0 {
@@ -36,9 +32,6 @@ you already have installed and authenticated.`,
 
 		workers, _ := cmd.Flags().GetInt("workers")
 		force, _ := cmd.Flags().GetBool("force")
-		summarize, _ := cmd.Flags().GetBool("summarize")
-		backend, _ := cmd.Flags().GetString("backend")
-		model, _ := cmd.Flags().GetString("model")
 
 		// Use --db flag > CYMBAL_DB env > compute from target path.
 		dbPath, _ := cmd.Flags().GetString("db")
@@ -57,11 +50,8 @@ you already have installed and authenticated.`,
 		start := time.Now()
 
 		stats, err := index.Index(absPath, dbPath, index.Options{
-			Workers:   workers,
-			Force:     force,
-			Summarize: summarize,
-			Backend:   backend,
-			Model:     model,
+			Workers: workers,
+			Force:   force,
 		})
 		if err != nil {
 			return fmt.Errorf("indexing failed: %w", err)
@@ -79,9 +69,6 @@ you already have installed and authenticated.`,
 		if stats.WriteErrors > 0 {
 			msg += fmt.Sprintf(", %d write errors", stats.WriteErrors)
 		}
-		if stats.Summarized > 0 {
-			msg += fmt.Sprintf(", %d summarized", stats.Summarized)
-		}
 		fmt.Fprintln(os.Stderr, msg)
 
 		return nil
@@ -91,8 +78,5 @@ you already have installed and authenticated.`,
 func init() {
 	indexCmd.Flags().IntP("workers", "w", 0, "number of parallel workers (0 = NumCPU)")
 	indexCmd.Flags().BoolP("force", "f", false, "force re-index all files")
-	indexCmd.Flags().Bool("summarize", false, "generate AI summaries using your installed agent CLI")
-	indexCmd.Flags().String("backend", "", "agent backend for summaries (default: auto-detect)")
-	indexCmd.Flags().StringP("model", "m", "", "model for summaries (e.g. anthropic/claude-sonnet-4-6)")
 	rootCmd.AddCommand(indexCmd)
 }

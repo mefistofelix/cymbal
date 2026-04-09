@@ -23,9 +23,6 @@ cymbal index [path] [flags]
 |------|-------------|
 | `-f, --force` | Force re-index all files |
 | `-w, --workers <n>` | Number of parallel workers (0 = NumCPU) |
-| `--summarize` | Generate AI summaries using your installed agent CLI |
-| `--backend <name>` | Agent backend for summaries (default: auto-detect) |
-| `-m, --model <id>` | Model for summaries (e.g. `anthropic/claude-sonnet-4-6`) |
 
 ```sh
 # Index current directory
@@ -33,9 +30,6 @@ cymbal index .
 
 # Force re-index with 8 workers
 cymbal index . --force --workers 8
-
-# Index with AI summaries
-cymbal index . --summarize
 ```
 
 ---

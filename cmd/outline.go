@@ -50,9 +50,6 @@ var outlineCmd = &cobra.Command{
 				line += s.Signature
 			}
 			line += fmt.Sprintf(" (L%d-%d)", s.StartLine, s.EndLine)
-			if s.Summary != "" {
-				line += "  -- " + s.Summary
-			}
 			content.WriteString(line)
 			content.WriteByte('\n')
 		}

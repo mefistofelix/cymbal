@@ -2,6 +2,16 @@
 
 All notable changes to cymbal are documented here.
 
+## [0.8.8] - 2026-04-08
+
+### Added
+
+- **Multi-language benchmark corpus and regression detection** for the bench harness.
+
+### Removed
+
+- **Deprecated unused LLM summarization feature** — removed `--summarize`, `--backend`, and `--model` flags from `cymbal index`. The feature was underdeveloped (summaries only surfaced in `outline`, not in `search`, `investigate`, or other commands) and added significant indexing latency for minimal value. Removed upstream dependency on `oneagent`.
+
 ## [0.8.7] - 2026-04-07
 
 ### Added

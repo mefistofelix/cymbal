@@ -15,18 +15,14 @@ import (
 	"time"
 
 	"github.com/1broseidon/cymbal/internal/parser"
-	"github.com/1broseidon/cymbal/internal/summarize"
 	"github.com/1broseidon/cymbal/internal/symbols"
 	"github.com/1broseidon/cymbal/internal/walker"
 )
 
 // Options controls indexing behavior.
 type Options struct {
-	Workers   int
-	Force     bool
-	Summarize bool
-	Backend   string // agent backend for summaries (empty = auto-detect)
-	Model     string // model override for summaries (empty = backend default)
+	Workers int
+	Force   bool
 }
 
 // Stats reports indexing results.
@@ -38,7 +34,6 @@ type Stats struct {
 	WriteErrors  int // DB write failures
 	SymbolsFound int
 	StaleRemoved int
-	Summarized   int
 	Errors       int // total errors (ParseErrors + WriteErrors)
 }
 
@@ -350,15 +345,6 @@ func Index(root, dbPath string, opts Options) (*Stats, error) {
 		Errors:       pe + we,
 	}
 
-	// Summarization pass — runs after indexing is complete.
-	if opts.Summarize {
-		summarized, err := runSummarization(store, opts.Backend, opts.Model)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: summarization error: %v\n", err)
-		}
-		stats.Summarized = summarized
-	}
-
 	return stats, nil
 }
 
@@ -451,133 +437,6 @@ func startProgress(total int, indexed, skipped, found *atomic.Int64) chan struct
 		}
 	}()
 	return done
-}
-
-// pendingSymbol holds a symbol that needs summarization.
-type pendingSymbol struct {
-	id        int64
-	name      string
-	kind      string
-	startLine int
-	endLine   int
-	language  string
-	filePath  string
-}
-
-// runSummarization generates AI summaries for symbols whose source has changed.
-// Uses batched prompts (10 symbols per call) and source hashing for diff tracking.
-func runSummarization(store *Store, backend, model string) (int, error) {
-	s, err := summarize.New(backend, model)
-	if err != nil {
-		return 0, err
-	}
-	fmt.Fprintf(os.Stderr, "Generating summaries via %s ...\n", s.Backend())
-
-	// Find top-level symbols that need summarization:
-	// - No summary yet, OR
-	// - Source hash changed (code was modified since last summary)
-	rows, err := store.db.Query(`
-		SELECT sym.id, sym.name, sym.kind, sym.start_line, sym.end_line, sym.language, f.path,
-		       COALESCE(sym.source_hash, '')
-		FROM symbols sym
-		JOIN files f ON sym.file_id = f.id
-		WHERE sym.kind IN ('function', 'method', 'struct', 'class', 'interface', 'trait', 'type', 'enum')
-		  AND sym.depth = 0
-		ORDER BY f.path, sym.start_line
-	`)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-
-	var items []pendingSymbol
-	var currentHashes []string
-	for rows.Next() {
-		var p pendingSymbol
-		var storedHash string
-		if err := rows.Scan(&p.id, &p.name, &p.kind, &p.startLine, &p.endLine, &p.language, &p.filePath, &storedHash); err != nil {
-			continue
-		}
-
-		// Read source and compute hash for diff tracking.
-		source := readLines(p.filePath, p.startLine, p.endLine)
-		if source == "" {
-			continue
-		}
-		currentHash := hashString(source)
-
-		// Skip if source unchanged since last summarization.
-		if storedHash == currentHash {
-			continue
-		}
-
-		items = append(items, p)
-		currentHashes = append(currentHashes, currentHash)
-	}
-
-	if len(items) == 0 {
-		fmt.Fprintf(os.Stderr, "All symbols up to date.\n")
-		return 0, nil
-	}
-
-	fmt.Fprintf(os.Stderr, "%d symbols to summarize (batches of %d) ...\n", len(items), summarize.BatchSize())
-
-	count := 0
-	for i := 0; i < len(items); i += summarize.BatchSize() {
-		end := i + summarize.BatchSize()
-		if end > len(items) {
-			end = len(items)
-		}
-		batch := items[i:end]
-		batchHashes := currentHashes[i:end]
-
-		// Build batch input.
-		var inputs []summarize.SymbolInput
-		for _, item := range batch {
-			source := readLines(item.filePath, item.startLine, item.endLine)
-			inputs = append(inputs, summarize.SymbolInput{
-				Name:     item.name,
-				Kind:     item.kind,
-				Language: item.language,
-				Source:   source,
-			})
-		}
-
-		batchNum := (i / summarize.BatchSize()) + 1
-		totalBatches := (len(items) + summarize.BatchSize() - 1) / summarize.BatchSize()
-		fmt.Fprintf(os.Stderr, "  batch %d/%d (%d symbols) ...\n", batchNum, totalBatches, len(batch))
-
-		results := s.SummarizeBatch(inputs)
-
-		// Write results + update source hashes.
-		for j, item := range batch {
-			summary, ok := results[j]
-			if !ok || summary == "" {
-				continue
-			}
-			_, err := store.db.Exec(
-				"UPDATE symbols SET summary = ?, source_hash = ? WHERE id = ?",
-				summary, batchHashes[j], item.id,
-			)
-			if err == nil {
-				count++
-			}
-		}
-	}
-
-	// Rebuild FTS index after bulk summary updates.
-	if count > 0 {
-		store.db.Exec("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')")
-	}
-
-	fmt.Fprintf(os.Stderr, "  %d symbols summarized.\n", count)
-	return count, nil
-}
-
-// hashString returns a short hash of a string for diff tracking.
-func hashString(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(h[:8]) // 16 hex chars — enough for diff detection
 }
 
 // readLines reads lines startLine..endLine from a file.

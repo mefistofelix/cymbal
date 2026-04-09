@@ -12,7 +12,6 @@ type Symbol struct {
 	Parent    string `json:"parent,omitempty"`
 	Depth     int    `json:"depth"`
 	Signature string `json:"signature,omitempty"`
-	Summary   string `json:"summary,omitempty"`
 	Language  string `json:"language"`
 }
 
