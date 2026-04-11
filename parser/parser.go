@@ -302,7 +302,7 @@ func (e *symbolExtractor) extractRef(node *sitter.Node) (symbols.Ref, bool) {
 	nodeType := node.Type()
 
 	switch e.lang {
-	case "go", "javascript", "typescript", "rust":
+	case "go", "javascript", "typescript", "rust", "c", "cpp":
 		return e.extractRefCallExpr(nodeType, node)
 	case "python":
 		return e.extractRefPythonCall(nodeType, node)
@@ -326,7 +326,7 @@ func (e *symbolExtractor) extractRefCallExpr(nodeType string, node *sitter.Node)
 	}
 	funcNode := node.ChildByFieldName("function")
 	if funcNode != nil {
-		name := extractCallName(funcNode, e.src)
+		name := extractCallName(funcNode, e.src, e.lang)
 		if name != "" {
 			return symbols.Ref{Name: name, Line: int(node.StartPoint().Row) + 1, Language: e.lang}, true
 		}
@@ -340,7 +340,7 @@ func (e *symbolExtractor) extractRefPythonCall(nodeType string, node *sitter.Nod
 	}
 	funcNode := node.ChildByFieldName("function")
 	if funcNode != nil {
-		name := extractCallName(funcNode, e.src)
+		name := extractCallName(funcNode, e.src, e.lang)
 		if name != "" {
 			return symbols.Ref{Name: name, Line: int(node.StartPoint().Row) + 1, Language: e.lang}, true
 		}
@@ -376,7 +376,7 @@ func (e *symbolExtractor) extractRefKotlin(nodeType string, node *sitter.Node) (
 	}
 	if node.ChildCount() > 0 {
 		callee := node.Child(0)
-		name := extractCallName(callee, e.src)
+		name := extractCallName(callee, e.src, e.lang)
 		if name != "" {
 			return symbols.Ref{Name: name, Line: int(node.StartPoint().Row) + 1, Language: e.lang}, true
 		}
@@ -414,11 +414,44 @@ func (e *symbolExtractor) extractRefElixir(nodeType string, node *sitter.Node) (
 
 // extractCallName gets the final identifier from a call expression function node.
 // For "foo.bar.Baz()", returns "Baz". For "Baz()", returns "Baz".
-func extractCallName(node *sitter.Node, src []byte) string {
-	content := node.Content(src)
-	if dot := strings.LastIndex(content, "."); dot >= 0 {
-		return content[dot+1:]
+// C++ extras (when lang == "cpp"):
+//   - "Calculator::multiply()" -> "multiply"
+//   - "ptr->method()" -> "method"
+func extractCallName(node *sitter.Node, src []byte, lang string) string {
+	content := strings.TrimSpace(node.Content(src))
+
+	if lang == "c" || lang == "cpp" {
+		// Normalize chained C/C++ qualifiers to the final callable name.
+		// Handles separators like ., ->, and :: in mixed forms.
+		for {
+			idx, step := -1, 0
+			if dot := strings.LastIndex(content, "."); dot > idx {
+				idx, step = dot, 1
+			}
+			if arrow := strings.LastIndex(content, "->"); arrow > idx {
+				idx, step = arrow, 2
+			}
+			if sep := strings.LastIndex(content, "::"); sep > idx {
+				idx, step = sep, 2
+			}
+			if idx < 0 {
+				break
+			}
+			content = content[idx+step:]
+		}
+
+		// C++ template calls (e.g., std::max<int>) should resolve to max.
+		if lang == "cpp" {
+			if lt := strings.Index(content, "<"); lt > 0 && strings.HasSuffix(content, ">") {
+				content = content[:lt]
+			}
+		}
+	} else {
+		if dot := strings.LastIndex(content, "."); dot >= 0 {
+			content = content[dot+1:]
+		}
 	}
+
 	// Skip if it contains special characters (not a simple identifier).
 	if strings.ContainsAny(content, "()[]{}") {
 		return ""
