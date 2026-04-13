@@ -142,9 +142,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Homebrew formula
-        if: ${{ github.repository_owner == '1broseidon' && secrets.HOMEBREW_TAP_GITHUB_TOKEN != '' }}
         env:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        if: ${{ github.repository_owner == '1broseidon' && env.HOMEBREW_TAP_GITHUB_TOKEN != '' }}
         run: |
           TAG=${{ steps.tag.outputs.tag }}
           VERSION="${TAG#v}"
