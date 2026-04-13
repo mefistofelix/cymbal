@@ -1,6 +1,8 @@
 # Binary
 cymbal
 /dist/
+build_cache/
+test_cache/
 
 # Database
 *.db

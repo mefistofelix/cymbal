@@ -3,6 +3,7 @@ package walker
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -314,6 +315,112 @@ func TestFeatureWalkerResultsSorted(t *testing.T) {
 	for i := 1; i < len(files); i++ {
 		if files[i].RelPath < files[i-1].RelPath {
 			t.Errorf("results not sorted: %s came after %s", files[i].RelPath, files[i-1].RelPath)
+		}
+	}
+}
+
+func TestFeatureWalkerRespectsRootGitignore(t *testing.T) {
+	dir := createTestTree(t)
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("frontend/\n*.py\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := Walk(dir, 4, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, f := range files {
+		relPath := filepath.ToSlash(f.RelPath)
+		if strings.HasPrefix(relPath, "frontend/") {
+			t.Fatalf("expected frontend to be ignored, got %s", f.RelPath)
+		}
+		if filepath.Base(relPath) == "helpers.py" {
+			t.Fatalf("expected helpers.py to be ignored, got %s", f.RelPath)
+		}
+	}
+}
+
+func TestFeatureWalkerRespectsNestedGitignore(t *testing.T) {
+	dir := createTestTree(t)
+	if err := os.WriteFile(filepath.Join(dir, "frontend", ".gitignore"), []byte("*.ts\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := Walk(dir, 4, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := make(map[string]bool)
+	for _, f := range files {
+		found[filepath.ToSlash(f.RelPath)] = true
+	}
+
+	if found["frontend/types.ts"] {
+		t.Fatal("expected nested .gitignore to ignore frontend/types.ts")
+	}
+	if !found["frontend/app.js"] {
+		t.Fatal("expected frontend/app.js to remain visible")
+	}
+}
+
+func TestFeatureWalkerSupportsGitignoreNegation(t *testing.T) {
+	dir := createTestTree(t)
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.go\n!main.go\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := Walk(dir, 4, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := make(map[string]bool)
+	for _, f := range files {
+		found[filepath.ToSlash(f.RelPath)] = true
+	}
+
+	if !found["main.go"] {
+		t.Fatal("expected main.go to be re-included by gitignore negation")
+	}
+	if found["lib/utils.go"] || found["src/nested/deep.go"] {
+		t.Fatal("expected other Go files to remain ignored")
+	}
+}
+
+func TestFeatureWalkerSupportsDoublestarGitignore(t *testing.T) {
+	dir := createTestTree(t)
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("**/nested/*.go\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := Walk(dir, 4, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, f := range files {
+		if filepath.ToSlash(f.RelPath) == "src/nested/deep.go" {
+			t.Fatal("expected doublestar gitignore pattern to ignore src/nested/deep.go")
+		}
+	}
+}
+
+func TestFeatureBuildTreeRespectsGitignore(t *testing.T) {
+	dir := createTestTree(t)
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("frontend/\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tree, err := BuildTree(dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, child := range tree.Children {
+		if child.Name == "frontend" {
+			t.Fatal("expected BuildTree to skip directories ignored by .gitignore")
 		}
 	}
 }

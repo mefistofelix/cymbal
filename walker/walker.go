@@ -2,13 +2,15 @@ package walker
 
 import (
 	"io"
-	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 // FileEntry is a file discovered during walking.
@@ -45,6 +47,15 @@ var skipDirs = map[string]bool{
 	"target":       true, // Rust/Java
 	".idea":        true,
 	".vscode":      true,
+}
+
+type gitignoreRule struct {
+	baseDir  string
+	pattern  string
+	negated  bool
+	dirOnly  bool
+	anchored bool
+	basename bool
 }
 
 // Language extension mapping.
@@ -165,21 +176,7 @@ func Walk(root string, workers int, langFilter func(string) bool) ([]FileEntry, 
 		})
 	}
 
-	// Walk the tree, sending file paths to workers.
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // skip errors
-		}
-		if d.IsDir() {
-			name := d.Name()
-			if skipDirs[name] || strings.HasPrefix(name, ".") && name != "." {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		ch <- path
-		return nil
-	})
+	err := walkFiles(root, root, nil, ch)
 	close(ch)
 	wg.Wait()
 
@@ -201,18 +198,53 @@ func BuildTree(root string, maxDepth int) (*TreeNode, error) {
 		IsDir: true,
 	}
 
-	err := buildTreeRecursive(rootNode, root, 1, maxDepth)
+	err := buildTreeRecursive(rootNode, root, root, nil, 1, maxDepth)
 	if err != nil {
 		return nil, err
 	}
 	return rootNode, nil
 }
 
-func buildTreeRecursive(node *TreeNode, dirPath string, depth, maxDepth int) error {
+func walkFiles(root, dirPath string, parentRules []gitignoreRule, ch chan<- string) error {
+	rules := rulesForDir(root, dirPath, parentRules)
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return nil
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		fullPath := filepath.Join(dirPath, name)
+		relPath, err := filepath.Rel(root, fullPath)
+		if err != nil {
+			continue
+		}
+		relPath = filepath.ToSlash(relPath)
+
+		if entry.IsDir() {
+			if shouldSkipDir(name, relPath, rules) {
+				continue
+			}
+			if err := walkFiles(root, fullPath, rules, ch); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if matchesGitignore(rules, relPath, false) {
+			continue
+		}
+		ch <- fullPath
+	}
+	return nil
+}
+
+func buildTreeRecursive(node *TreeNode, root, dirPath string, parentRules []gitignoreRule, depth, maxDepth int) error {
 	if maxDepth > 0 && depth > maxDepth {
 		return nil
 	}
 
+	rules := rulesForDir(root, dirPath, parentRules)
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
 		return nil
@@ -220,23 +252,147 @@ func buildTreeRecursive(node *TreeNode, dirPath string, depth, maxDepth int) err
 
 	for _, e := range entries {
 		name := e.Name()
-		if skipDirs[name] || (strings.HasPrefix(name, ".") && name != ".") {
+		childPath := filepath.Join(dirPath, name)
+		relPath, err := filepath.Rel(root, childPath)
+		if err != nil {
 			continue
 		}
+		relPath = filepath.ToSlash(relPath)
 
 		child := &TreeNode{
 			Name:  name,
-			Path:  filepath.Join(dirPath, name),
+			Path:  childPath,
 			IsDir: e.IsDir(),
 		}
 
 		if e.IsDir() {
-			buildTreeRecursive(child, child.Path, depth+1, maxDepth)
+			if shouldSkipDir(name, relPath, rules) {
+				continue
+			}
+			buildTreeRecursive(child, root, child.Path, rules, depth+1, maxDepth)
+		} else if matchesGitignore(rules, relPath, false) {
+			continue
 		}
 
 		node.Children = append(node.Children, child)
 	}
 	return nil
+}
+
+func shouldSkipDir(name, relPath string, rules []gitignoreRule) bool {
+	return skipDirs[name] || (strings.HasPrefix(name, ".") && name != ".") || matchesGitignore(rules, relPath, true)
+}
+
+func rulesForDir(root, dirPath string, parentRules []gitignoreRule) []gitignoreRule {
+	rules := append([]gitignoreRule(nil), parentRules...)
+	localRules, err := loadGitignoreRules(root, dirPath)
+	if err == nil && len(localRules) > 0 {
+		rules = append(rules, localRules...)
+	}
+	return rules
+}
+
+func loadGitignoreRules(root, dirPath string) ([]gitignoreRule, error) {
+	data, err := os.ReadFile(filepath.Join(dirPath, ".gitignore"))
+	if err != nil {
+		return nil, err
+	}
+
+	baseDir, err := filepath.Rel(root, dirPath)
+	if err != nil {
+		return nil, err
+	}
+	baseDir = filepath.ToSlash(baseDir)
+	if baseDir == "." {
+		baseDir = ""
+	}
+
+	var rules []gitignoreRule
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		rule := gitignoreRule{baseDir: baseDir}
+		if strings.HasPrefix(line, "!") {
+			rule.negated = true
+			line = line[1:]
+		}
+
+		line = filepath.ToSlash(line)
+		if strings.HasPrefix(line, "/") {
+			rule.anchored = true
+			line = strings.TrimPrefix(line, "/")
+		}
+		if strings.HasSuffix(line, "/") {
+			rule.dirOnly = true
+			line = strings.TrimSuffix(line, "/")
+		}
+		if line == "" {
+			continue
+		}
+
+		rule.pattern = line
+		rule.basename = !strings.Contains(line, "/")
+		rules = append(rules, rule)
+	}
+
+	return rules, nil
+}
+
+func matchesGitignore(rules []gitignoreRule, relPath string, isDir bool) bool {
+	relPath = filepath.ToSlash(relPath)
+	ignored := false
+	for _, rule := range rules {
+		if rule.matches(relPath, isDir) {
+			ignored = !rule.negated
+		}
+	}
+	return ignored
+}
+
+func (rule gitignoreRule) matches(relPath string, isDir bool) bool {
+	if rule.dirOnly && !isDir {
+		return false
+	}
+	if rule.baseDir != "" {
+		prefix := rule.baseDir + "/"
+		if relPath == rule.baseDir {
+			return false
+		}
+		if !strings.HasPrefix(relPath, prefix) {
+			return false
+		}
+		relPath = strings.TrimPrefix(relPath, prefix)
+	}
+	if relPath == "" {
+		return false
+	}
+
+	if rule.basename {
+		matched, _ := doublestar.Match(rule.pattern, path.Base(relPath))
+		return matched
+	}
+
+	if matchGitignorePath(rule.pattern, relPath) {
+		return true
+	}
+	if rule.anchored {
+		return false
+	}
+
+	for i := 0; i < len(relPath); i++ {
+		if relPath[i] == '/' && matchGitignorePath(rule.pattern, relPath[i+1:]) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchGitignorePath(pattern, name string) bool {
+	matched, err := doublestar.Match(pattern, name)
+	return err == nil && matched
 }
 
 // PrintTree writes an ASCII tree to the writer.

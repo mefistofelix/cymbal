@@ -80,6 +80,8 @@ docker compose run --rm cymbal index .
 
 Add `.cymbal/` to your `.gitignore` to keep the index out of version control.
 
+By default, cymbal also respects your repository's `.gitignore` rules when indexing and browsing the tree.
+
 ## Quick start
 
 Define a shell alias once so every command looks like the native binary:
